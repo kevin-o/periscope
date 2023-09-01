@@ -1,0 +1,41 @@
+Product,Group.1.Basic,Group.1.Units,Group.2.Exclusions,Group.2.Units
+Buds - Each,Buds,Grams,Exclude,Exclude
+Buds - Grams,Buds,Grams,Buds,Grams
+Buds - Kilograms,Buds,Grams,Buds,Grams
+Buds - Milligrams,Buds,Grams,Buds,Grams
+Buds - Ounces,Buds,Grams,Exclude,Exclude
+Buds - Pounds,Buds,Grams,Exclude,Exclude
+Concentrate - Each,Concentrate,Grams,Exclude,Exclude
+Concentrate - Grams,Concentrate,Grams,Concentrate,Grams
+Concentrate - Kilograms,Concentrate,Grams,Concentrate,Grams
+Concentrate - Milligrams,Concentrate,Grams,Concentrate,Grams
+Concentrate - Ounces,Concentrate,Grams,Concentrate,Grams
+Concentrate (Bulk) - Grams,Concentrate,Grams,Exclude,Exclude
+Concentrate (Bulk) - Milligrams,Concentrate,Grams,Exclude,Exclude
+Concentrate (Each) - Each,Concentrate,Grams,Exclude,Exclude
+Concentrate (Each) - Grams,Concentrate,Grams,Exclude,Exclude
+Immature Plants - Each,Plants,Each,Exclude,Exclude
+Infused (edible) - Each,Infused (edible),Each,Infused (edible),Each
+Infused (non-edible) - Each,Infused (non-edible),Each,Infused (non-edible),Each
+Infused Beverage - Each,Infused Beverage,Each,Infused Beverage,Grams
+Infused Beverages (Bulk) - Milliliters,Infused Beverage,Each,Exclude,Exclude
+Infused Pre-Rolls - Grams,Infused Pre-Rolls,Grams,Infused Pre-Rolls,Grams
+Infused Pre-Rolls - Milligrams,Infused Pre-Rolls,Grams,Infused Pre-Rolls,Grams
+Kief - Each,Kief,Grams,Exclude,Exclude
+Kief - Grams,Kief,Grams,Kief,Grams
+Kief - Milligrams,Kief,Grams,Kief,Grams
+Raw Pre-Rolls - Each,Raw Pre-Rolls,Grams,Exclude,Exclude
+Raw Pre-Rolls - Grams,Raw Pre-Rolls,Grams,Raw Pre-Rolls,Grams
+Raw Pre-Rolls - Kilograms,Raw Pre-Rolls,Grams,Raw Pre-Rolls,Grams
+Raw Pre-Rolls - Milligrams,Raw Pre-Rolls,Grams,Raw Pre-Rolls,Grams
+Raw Pre-Rolls - Ounces,Raw Pre-Rolls,Grams,Exclude,Exclude
+Raw Pre-Rolls - Pounds,Raw Pre-Rolls,Grams,Exclude,Exclude
+Seeds - Each,Seeds,Each,Exclude,Exclude
+Shake/Trim - Grams,Shake/Trim,Grams,Shake/Trim,Grams
+Shake/Trim - Milligrams,Shake/Trim,Grams,Shake/Trim,Grams
+Shake/Trim - Ounces,Shake/Trim,Grams,Exclude,Exclude
+Shake/Trim (by strain) - Each,Shake/Trim,Grams,Shake/Trim,Grams
+Shake/Trim (by strain) - Grams,Shake/Trim,Grams,Shake/Trim,Grams
+Suppository - Each,Suppository,Each,Exclude,Exclude
+Vape Product - Each,Vape Product,Each,Vape Product,Each
+Waste - Grams,Waste,Grams,Exclude,Exclude
