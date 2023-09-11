@@ -88,11 +88,11 @@ leadTimeFile <- "20230808"
 forecastFile <- "20230215"
 
 
-path_to_ThisPeriod<- paste('Data/',ccc_ThisPeriod,sep='')
-path_to_output_directory <- paste('Data/',ccc_ThisPeriod, '/ccc',ccc_ThisPeriod,'output',sep="")
-path_to_LastPeriod <- paste('Data/',ccc_LastPeriod,sep='')
-path_to_leadTimeFile <- paste('Data/',leadTimeFile,sep='')
-path_to_forecastFile <- paste('Data/',forecastFile, '/ccc',forecastFile,'output',sep="")
+path_to_ThisPeriod<- paste('data/',ccc_ThisPeriod,sep='')
+path_to_output_directory <- paste('data/',ccc_ThisPeriod, '/ccc',ccc_ThisPeriod,'output',sep="")
+path_to_LastPeriod <- paste('data/',ccc_LastPeriod,sep='')
+path_to_leadTimeFile <- paste('data/',leadTimeFile,sep='')
+path_to_forecastFile <- paste('data/',forecastFile, '/ccc',forecastFile,'output',sep="")
 
 
 ##########################################
@@ -106,10 +106,10 @@ city_df$INTPTLON20 <- as.numeric(city_df$INTPTLON20)
 
 # ##########  LOAD AND MASSAGE DATA ##############
 # 
-MSFS_df <- read.csv(paste(path_to_ThisPeriod,'/Sales_and_Distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
+MSFS_df <- read.csv(paste(path_to_ThisPeriod,'/sales_and_distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
 
 
-MSFSLastPeriod_df <- read.csv(paste(path_to_LastPeriod,'/Sales_and_Distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
+# MSFSLastPeriod_df <- read.csv(paste(path_to_LastPeriod,'/Sales_and_Distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
 
 # 
 # 
@@ -206,5 +206,32 @@ renderValueBox ({
   valueBox(totSalesVB,
            caption = 'Sales YTD <br>(Millions)',
            color='#A12F28')
+})
+```
+
+Row
+-----------------------------------------
+### City 
+```{r}
+renderDataTable ({
+ city_df
+})
+```
+
+Row
+-----------------------------------------
+### City 
+```{r}
+renderDataTable ({
+ MSFS_df
+})
+```
+
+Row 
+-----------------------------------------
+### Recipes 
+```{r}
+renderDataTable ({
+ Recipes
 })
 ```
