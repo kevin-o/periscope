@@ -1,0 +1,4667 @@
+---
+title: "periSCOPE™: Massachusetts Cannabis Industry"
+author: "by operations | architects, llc"
+output:
+  flexdashboard::flex_dashboard:
+    theme:
+      bg: '#FFFFFF'
+      fg: '#000000'
+ #     primary: '#8F0000'
+      primary: '#020251'
+      base_font:
+        google: Roboto Condensed
+      code_font:
+        google: JetBrains Mono
+    orientation: rows
+    vertical_layout: scroll
+runtime: shiny
+
+---
+
+```{r setup, global, include=FALSE}
+
+library(shiny)
+library(tidyverse)
+library(plotly)
+library(lubridate)
+library(kableExtra)
+library(DT)
+library(shinyWidgets)
+#library(leaflet)
+library(maps)
+library(formattable)
+library(zoo)
+library(svglite)
+library(gt)
+library(glue)
+library(fable)
+library(fabletools)
+#library(tsibble)
+#library(tsibbledata)
+# library(feasts)
+# library(scales)
+# library(forecast)
+# library(TTR)
+# library(EnvStats)
+# library(truncnorm)
+library(reshape)
+library(thematic)
+# library(seasonal)
+library(vistime)
+library(flexdashboard)
+library(foreign)
+library(geosphere)
+# library(remotes)
+# remotes::install_github('rstudio/flexdashboard')
+# library(flexdashboard)
+
+# Install thematic and un-comment for themed static plots (i.e., ggplot2)
+thematic::thematic_rmd()
+
+
+yields <- read.csv("yield.csv")
+
+tiers <- read.csv('Tier_data.csv')
+tiers <- dplyr::rename(tiers, tier=Tier)
+
+productGroups <- reactive ({
+  read_csv("Product_Group.csv", 
+    col_types = cols(...1 = col_skip(), X = col_skip()))
+})
+
+Conversion_Factors <- read.csv('Conversion_Factors.csv')
+Recipes <- read.csv('Recipes.csv')
+
+oa_footnote <- "Source: operations | architects"
+
+
+productGroupsNames <- reactive ({
+  n<-colnames(productGroups())
+  grep("Units",grep("Group",n,value=TRUE), invert=TRUE, value=TRUE)
+})
+
+############  PATHS AND WORKING DIRECTORIES ####################
+
+ccc_LastPeriod <- "20230808"
+ccc_ThisPeriod <- "20230906"
+leadTimeFile <- "20230808"
+forecastFile <- "20230215"
+
+
+path_to_ThisPeriod<- paste('data/',ccc_ThisPeriod,sep='')
+path_to_output_directory <- paste('data/',ccc_ThisPeriod, '/ccc',ccc_ThisPeriod,'output',sep="")
+path_to_LastPeriod <- paste('data/',ccc_LastPeriod,sep='')
+path_to_leadTimeFile <- paste('data/',leadTimeFile,sep='')
+path_to_forecastFile <- paste('data/',forecastFile, '/ccc',forecastFile,'output',sep="")
+
+### Create output directory if it doesn't exist
+# if (!dir.exists(path_to_output_directory)) {
+#   dir.create(path_to_output_directory)
+# }
+##########################################
+# Load city demographic data
+
+city_df <- read.dbf("CENSUS2020TOWNS_POLY.dbf", as.is = TRUE)
+
+city_df$INTPTLAT20 <- as.numeric(city_df$INTPTLAT20)
+city_df$INTPTLON20 <- as.numeric(city_df$INTPTLON20)
+
+##########################################
+# Summarize Sales by product category
+rpt_sales_byCategory <- function (df,period){
+  if(period=='week'){
+    dstyle <- 'm_day_year'
+  }
+  if(period=='year'){
+    dstyle <- 'year'
+  }
+  if (period=='month'){
+    dstyle <- 'm_day_year'
+  }
+  if (period=='quarter'){
+    dstyle <- 'm_day_year'
+  }
+  d <- df %>% group_by(ProductCategoryName,Period = lubridate::floor_date(SaleDateC, period)) %>%
+    summarize(Sales = sum(TotalPrice,na.rm=TRUE))
+  return(d)
+} 
+rpt_sales_Total_Between <- function (df, begDate, endDate) {
+  d <- df %>% 
+    filter (begDate <= SaleDateC, SaleDateC <= endDate) %>%
+    summarize(Sales = sum(TotalPrice, na.rm=TRUE))
+  return(d)
+}
+
+rpt_sales_Total <- function (df,period){
+  if(period=='week'){
+    dstyle <- 'm_day_year'
+  }
+  if(period=='year'){
+    dstyle <- 'year'
+  }
+  if (period=='month'){
+    dstyle <- 'm_day_year'
+  }
+  if (period=='quarter'){
+    dstyle <- 'm_day_year'
+  }
+  d <- df %>% group_by(Period = lubridate::floor_date(SaleDateC, period)) %>%
+    summarize(Sales = sum(TotalPrice,na.rm=TRUE))
+  return(d)
+}
+
+prepMSFSFile <- function(df){
+  avg<- df$TotalPrice/df$Quantity
+  newdf <- df %>% mutate(AvgPriceperUnit = avg)
+  
+  #Now convert SaleDate to date format
+  
+  newdf <- newdf %>% mutate(SaleDateC = as.Date(SaleDate,format='%m/%d/%Y')) %>% arrange(SaleDateC)
+  return(newdf)
+}
+prepMelaApprovedFile <- function(df){
+  newdf <- df
+  colnames(newdf) <- tolower(colnames(newdf))
+  
+  # add columns for date stamps
+  newdf <- newdf %>% mutate(application_date = Sys.Date(),
+                            prov_cons_date = Sys.Date(),
+                            prov_lic_date = Sys.Date(),
+                            final_lic_date = Sys.Date())
+  
+  
+# Change COMMENCE OPS to FINAL LICENSE
+  if ("COMMENCE OPS" %in% newdf$approved_license_type){
+    newdf$approved_license_type[newdf$approved_license_type == "COMMENCE OPS"] <- "FINAL LICENSE"
+  }
+  
+# Change column name for 
+  if ("cnb_dt_of_final_licensure" %in% colnames(newdf)){
+    newdf <- dplyr::rename(newdf, cnb_date_of_final_licensure.1 = cnb_dt_of_final_licensure)
+  }
+  
+# Change date formats across all date columns
+ newdf <- newdf %>%
+    mutate(across(contains("date"), ~ as.Date(.x, tryFormats = c("%m/%d/%Y","%a %b %d %Y"))))
+ 
+ # add a commence_ind indicator column
+  if ("commence_operations_date" %in% colnames(newdf)){
+    newdf<- newdf %>% mutate(commence_ind = !is.na(commence_operations_date))}
+ 
+# Create new column for Tier
+  if ("cultivation_tier" %in% colnames(newdf)){
+    newdf<- newdf %>% mutate(tier=as.numeric(substr(cultivation_tier,6,7)))
+  }
+ 
+  return(newdf)
+}
+
+convertLongDateCCC <- function(dateVector){
+  t <- str_sub(dateVector,5,15)
+  as.Date(t,format="%b %d %Y")
+}
+
+prepLTFile <- function(df){
+  temp_df <- df
+  colnames(temp_df) <- tolower(colnames(temp_df))
+  
+  temp_df$application_created_date <- convertLongDateCCC(temp_df$application_created_date) 
+  temp_df$cnb_deemed_complete_date <-
+          convertLongDateCCC(temp_df$cnb_deemed_complete_date)
+  temp_df$application_approved_date <- convertLongDateCCC(temp_df$application_approved_date) 
+  temp_df$cnb_dt_of_final_licensure <- convertLongDateCCC(temp_df$cnb_dt_of_final_licensure) 
+  temp_df$lic_start_date <- convertLongDateCCC(temp_df$lic_start_date) 
+  
+  temp_df$lic_expiration_date <- convertLongDateCCC(temp_df$lic_expiration_date)
+  
+  temp_df$commence_operations_date <- as.Date(temp_df$commence_operations_date, format="%m/%d/%Y")
+  
+  temp_df %>%
+    select(license_number, 
+           business_name,
+           business_city,
+           license_type,
+           application_status,
+           lic_status,
+           dbe,
+           approved_license_type,
+           application_classification,
+           cultivation_environment,
+           cultivation_tier,
+           application_created_date,
+           cnb_deemed_complete_date,
+           application_approved_date,
+           cnb_dt_of_final_licensure,
+           lic_start_date,
+           lic_expiration_date,
+           commence_operations_date)
+                                
+}
+ 
+prepMelaFile <- function(df){
+  newdf <- df
+  colnames(newdf) <- tolower(colnames(newdf))
+  
+# Change COMMENCE OPS to FINAL LICENSE
+  if ("COMMENCE OPS" %in% newdf$approved_license_type){
+    newdf$approved_license_type[newdf$approved_license_type == "COMMENCE OPS"] <- "FINAL LICENSE"
+  }
+  
+# Change column name for 
+  if ("cnb_dt_of_final_licensure" %in% colnames(newdf)){
+    newdf <- dplyr::rename(newdf, cnb_date_of_final_licensure.1 = cnb_dt_of_final_licensure)
+  }
+# Extract Dates from important date fields
+ if ("original_submitted_date" %in% colnames(newdf)){
+  newdf$original_submitted_date <- as.Date(substr(newdf$original_submitted_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+ }
+  
+  if ("submitted_date" %in% colnames(newdf)){
+  newdf$submitted_date <- as.Date(substr(newdf$submitted_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("first_compliance_review_date" %in% colnames(newdf)){
+  newdf$first_compliance_review_date <- as.Date(substr(newdf$first_compliance_review_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("lic_fee_payment_submitted_date" %in% colnames(newdf)) {
+  newdf$lic_fee_payment_submitted_date <- as.Date(substr(newdf$lic_fee_payment_submitted_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("cnb_date_of_final_licensure.1" %in% colnames(newdf)){
+  newdf$cnb_date_of_final_licensure.1 <- as.Date(substr(newdf$cnb_date_of_final_licensure.1, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("application_created_date" %in% colnames(newdf)){
+  newdf$application_created_date <- as.Date(substr(newdf$application_created_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("application_approved_date" %in% colnames(newdf)){
+  newdf$application_approved_date <- as.Date(substr(newdf$application_approved_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("lic_start_date" %in% colnames(newdf)){
+  newdf$lic_start_date <- as.Date(substr(newdf$lic_start_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("lic_expiration_date" %in% colnames(newdf)){
+  newdf$lic_expiration_date <- as.Date(substr(newdf$lic_expiration_date, 1, 15), tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+  
+  if ("commence_operations_date" %in% colnames(newdf)) {
+  newdf$commence_operations_date <- as.Date(newdf$commence_operations_date, tryFormats=c("%a %b %d %Y", "%m/%d/%Y"))
+  }
+ 
+ # add a commence_ind indicator column
+  if ("commence_operations_date" %in% colnames(newdf)){
+    newdf<- newdf %>% mutate(commence_ind = !is.na(commence_operations_date))}
+ 
+# Create new column for Tier
+  if ("cultivation_tier" %in% colnames(newdf)){
+    newdf<- newdf %>% mutate(tier=as.numeric(substr(cultivation_tier,6,7)))
+  }
+  
+# Normalize 'priority' column
+  if ("priority" %in% colnames(newdf)){
+    newdf$priority[tolower(newdf$priority) == 'true'] <- TRUE
+    newdf$priority[tolower(newdf$priority) != 'true'] <- FALSE
+  }
+  
+# Normalize City and Town
+  if ("business_city" %in% colnames(newdf)){
+  newdf$business_city <- str_to_title(newdf$business_city)
+  }
+
+# If Provisional or Final license and no payment date, fill payment date with lic app date
+  i <- (newdf$approved_license_type == "PROVISIONAL LICENSE" | newdf$approved_license_type == "FINAL LICENSE") & is.na(newdf$lic_fee_payment_submitted_date)
+  
+    newdf[i,'lic_fee_payment_submitted_date' ] <- newdf[i, 'application_approved_date']
+    
+  #    # Add column for length in time in current license status
+  # newdf <- newdf %>%
+  #   mutate(months_at_level = dplyr::case_when(
+  #     approved_license_stages == "COMMENCE OPERATIONS" ~
+  #       as.numeric(Sys.Date() - commence_operations_date)/12,
+  #    approved_license_stages == "FINAL LICENSE" ~
+  #       as.numeric(Sys.Date() - cnb_date_of_final_licensure.1)/12,
+  #    approved_license_stages == "PROVISIONAL LICENSE" ~
+  #      as.numeric(Sys.Date() - lic_fee_payment_submitted_date )/12,
+  #     approved_license_stages == "PROVISIONAL CONSIDERATION" ~
+  #       as.numeric(Sys.Date() - application_approved_date)/12,
+  #     approved_license_stages == "IN PROCESS" ~
+  #       as.numeric(Sys.Date() - application_date)/12,
+  #    .default = NA
+  #   ))
+
+
+  return(newdf)
+}
+ 
+# Function to summarize MSFS file
+summarizeMSFS <- function(df,period) ({
+  df %>% group_by(ProductCategoryName, UnitOfMeasureName, Period=lubridate::floor_date(SaleDateC, period)) %>% 
+  summarize(Quantity=sum(Quantity, na.rm=TRUE), Sales=sum(TotalPrice, na.rm=TRUE)) %>% 
+  ungroup()%>%
+  mutate(Avg_Price = Sales/Quantity,
+         Merged_Name = paste(ProductCategoryName, UnitOfMeasureName, sep=" - ")) %>%
+    group_by(Merged_Name) %>%
+    arrange(Period, by_group = TRUE) %>%
+    mutate(Sales_Prior_Year = lag(Sales,n=
+                                     case_when(period == "day" ~ 365,
+          period == "week" ~ 52,
+          period == "month" ~ 12,
+          period == "quarter" ~ 4,
+          period == "year" ~ 1), 
+     , order_by=Merged_Name))%>%
+  mutate(AvgPrice_Prior_Year = lag(Avg_Price,n=
+                                     case_when(period == "day" ~ 365,
+          period == "week" ~ 52,
+          period == "month" ~ 12,
+          period == "quarter" ~ 4,
+          period == "year" ~ 1), 
+     , order_by=Merged_Name)) %>% 
+  mutate(YoYPrice = 100*(Avg_Price - AvgPrice_Prior_Year)/AvgPrice_Prior_Year) %>%
+    mutate(Quantity_Prior_Year = lag(Quantity,n=
+                                       case_when(period == "day" ~ 365,
+          period == "week" ~ 52,
+          period == "month" ~ 12,
+          period == "quarter" ~ 4,
+          period == "year" ~ 1), 
+     , order_by=Merged_Name)) %>% 
+  mutate(YoYQuantity = 100*(Quantity - Quantity_Prior_Year)/Quantity_Prior_Year) %>%
+  mutate(YoYSales = 100*(Sales - Sales_Prior_Year)/Sales_Prior_Year) %>%
+    ungroup()
+})
+
+##########  LOAD AND MASSAGE DATA ##############
+
+MSFS_df <- read.csv(paste(path_to_ThisPeriod,'/sales_and_distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
+MSFS_df<- prepMSFSFile(MSFS_df)
+
+MSFSLastPeriod_df <- read.csv(paste(path_to_LastPeriod,'/sales_and_distribution/AU_Marijuana_Establishment_Facility_Statistics.csv',sep=''), header=TRUE, sep=",")
+MSFSLastPeriod_df <- prepMSFSFile(MSFSLastPeriod_df)
+
+### t_month is summary by month at product/UoM level 
+t_month <- summarizeMSFS(MSFS_df, 'month')
+t_year <- summarizeMSFS(MSFS_df, 'year')
+t_week <- summarizeMSFS(MSFS_df, 'week')
+t_day <- summarizeMSFS(MSFS_df, 'day')
+t_quarter <- summarizeMSFS(MSFS_df, 'quarter')
+
+
+MELA_Pending_df<- read.csv(paste(path_to_ThisPeriod,'/applications_and_licensure/AU_Marijuana_Establishment_License_and_Applications-Approved_Pending_Re-Opened.csv',sep=''), header=TRUE, sep=",")
+
+MELA_P_df <- prepMelaFile(MELA_Pending_df)
+
+
+MELA_Pending_LastPeriod_df<- read.csv(paste(path_to_LastPeriod,'/applications_and_licensure/AU_Marijuana_Establishment_License_and_Applications-Approved_Pending_Re-Opened.csv',sep=''), header=TRUE, sep=",")
+
+MELA_P_LastPeriod_df <- prepMelaFile(MELA_Pending_LastPeriod_df)
+
+# colnames(MELA_Pending_LastPeriod_df) <- toupper(colnames(MELA_Pending_LastPeriod_df))
+# MELA_Pending_LastPeriod_df <- prepMelaPendingFile(MELA_Pending_LastPeriod_df)
+
+MELA_Approved_df<- read.csv(paste(path_to_ThisPeriod,'/applications_and_licensure/AU_Marijuana_Establishment_License_and_Applications-Approved.csv',sep=''), header=TRUE, sep=",")
+MELA_A_df <- prepMelaFile(MELA_Approved_df)
+
+MELA_Approved_df <- prepMelaApprovedFile(MELA_Approved_df)
+
+MELA_Approved_LastPeriod_df<- read.csv(paste(path_to_LastPeriod,'/applications_and_licensure/AU_Marijuana_Establishment_License_and_Applications-Approved.csv',sep=''),header=TRUE, sep=",")
+
+MELA_A_LastPeriod_df <- prepMelaFile(MELA_Approved_LastPeriod_df)
+
+MELA_Approved_LastPeriod_df <- prepMelaApprovedFile(MELA_Approved_LastPeriod_df)
+
+MELA_df <- plyr::join(MELA_A_df, MELA_P_df, by='license_number', type='full')
+MELA_LastPeriod_df <- plyr::join(MELA_A_LastPeriod_df, MELA_P_LastPeriod_df, by='license_number', type='full')
+
+################
+
+active_dispensaries <-MELA_Approved_df %>%
+  filter(license_type=="Marijuana Retailer" & approved_license_stages =="COMMENCE OPS") %>% 
+  select(business_name, establishment_city, license_number, latitude, longitude, commence_operations_date)
+
+city_expanded <- crossing(city_df, active_dispensaries)
+
+city_expanded <- city_expanded %>%
+  mutate(distance =distHaversine(cbind(INTPTLON20, INTPTLAT20), cbind(longitude, latitude), r=3958))
+
+min_distance <- city_expanded %>% 
+  group_by(GEOID20, TOWN20, POP2020) %>% 
+  summarize(distance = min(distance)) %>% 
+  arrange(TOWN20)
+rm(city_expanded)
+### Create a Delinquent License dataframe
+MELA_Delinquent_df <- MELA_df %>%
+  filter(approved_license_type %in% c('FINAL LICENSE', 'PROVISIONAL LICENSE')) %>%
+  filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+  mutate(license_delinquent_days = as.Date(ccc_ThisPeriod, format="%Y%m%d") - lic_expiration_date )
+MELA_Delinquent_df$license_delinquent_days<- as.numeric(MELA_Delinquent_df$license_delinquent_days)
+
+### Benchmark Price
+
+MPPO_df<- read.csv(paste(path_to_ThisPeriod,'/sales_and_distribution/AU_Average_Monthly_Price_per_Ounce_for_Adult-Use_Cannabis.csv',sep=''), header=TRUE, sep=",")
+
+MPPO_df$SoldDate <- as.Date(MPPO_df$SoldDate,"%m/%d/%Y")
+
+MPPO_df <- MPPO_df %>% 
+  arrange(SoldDate)
+
+MPPO_month_df <- MPPO_df %>%
+  group_by(month = lubridate::floor_date(SoldDate, "month")) %>%
+  summarize(avg_price = mean(AverageRetailPriceperOz,na.rm=TRUE))%>% 
+  filter(month <= Sys.Date())
+
+### Lead Time File
+
+lT_df<- read_csv(paste(path_to_leadTimeFile,"/applications_and_licensure/AU_Marijuana_Establishment_License_and_Applications-Approved_Pending_Re-Opened.csv",sep=""))
+
+lT_df <- prepLTFile (lT_df)
+ 
+###############################
+
+### Plant Activity File
+
+plantActivity_df <- read_csv(paste(path_to_ThisPeriod, "/sales_and_distribution/AU_Marijuana_Establishment_Adult-use_Plant_Activity_and_Volume.csv", sep=""), col_types = cols(ActivitySummaryDate = col_date(format = "%m/%d/%Y")))
+
+plantActivity_df <- plantActivity_df %>% 
+  group_by(ActivitySummaryDate) %>%
+  mutate(consPlantHarvestedCount = sum(PlantHarvestedCount)) %>%
+  arrange(ActivitySummaryDate) %>%
+  ungroup()
+
+plantActivity_df$lag_PlantHarvestedCount <- lag(plantActivity_df$PlantHarvestedCount, 1)
+plantActivity_df$dailyPlantHarvestedCount <- plantActivity_df$consPlantHarvestedCount - plantActivity_df$lag_PlantHarvestedCount
+plantActivity_df$dailyPlantHarvestedCount[is.na(plantActivity_df$dailyPlantHarvestedCount)] <- 0
+
+# Now correct the series where the ccc file contains corrections
+
+# deal with 11-10-2021
+ind <- which(plantActivity_df$ActivitySummaryDate == as.Date("2021-11-10"))
+plantActivity_df$dailyPlantHarvestedCount[ind+1] <- plantActivity_df$dailyPlantHarvestedCount[ind] + plantActivity_df$dailyPlantHarvestedCount[ind+1]
+plantActivity_df$dailyPlantHarvestedCount[ind] <- 0
+
+# now spread other negatives back
+
+plantActivity_df$dailyPlantHarvestedCount
+while (sum(plantActivity_df$dailyPlantHarvestedCount < 0) != 0 ) {
+  ind <- which(plantActivity_df$dailyPlantHarvestedCount < 0 )
+  plantActivity_df$dailyPlantHarvestedCount[ind-1] <- plantActivity_df$dailyPlantHarvestedCount[ind] + plantActivity_df$dailyPlantHarvestedCount[ind-1]
+plantActivity_df$dailyPlantHarvestedCount[ind] <- 0
+plantActivity_df$dailyPlantHarvestedCount[is.na(plantActivity_df$dailyPlantHarvestedCount)] <- 0
+}
+
+###############################
+
+products <- sort(unique(paste(MSFS_df$ProductCategoryName,' - ', MSFS_df$UnitOfMeasureName,sep="")))
+
+
+```
+
+
+Overview {data-orientation=rows}
+=========================================
+Inputs {.sidebar data-width=300}
+-----------------------------------------
+<h3>Welcome!</h3>
+
+periSCOPE™ is operations|architects's proprietary analytics workbench for  analyzing the dynamics of the Massachusetts cannabis industry.  
+
+We incorporate leading machine learning and artificial intelligence algorithms into our analytics, models and forecasts. Using periSCOPE™, investors, license holders, and potential licensees can gain insight into the state of the industry and build confidence to make smart investment and operating decisions. 
+
+Use of this platform is subject to the Disclaimer notice under the 'Other Information' tab on this page.  If you have questions about the data, the analytics, the models or the visualizations, please contact <a href='mailto:chris.olaughlin@operationsarchitects.com'>Chris O'Laughlin</a>.
+```{r}
+hr()
+h5('Date of File Updates')
+h6(paste('Date of current period files: ', format(as.Date(ccc_ThisPeriod,"%Y%m%d"),format="%b %d, %Y")))
+
+h6(paste('Date of previous period files: ', format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")))
+
+h6(paste('Date of Files used for Lead Time Analysis: ',format(as.Date(leadTimeFile,"%Y%m%d"),format="%b %d, %Y")))
+
+hr()
+h5('Controls')
+sliderInput("maSalesTaxRate", label = h6("MA Sales Tax Rate (%)"), min = 0, 
+        max = 20, value = 6.25, step=.25)
+sliderInput("maExciseTaxRate", label = h6("MA Excise Tax Rate (%)"), min = 0, 
+        max = 20, value = 10.75, step=.25)
+sliderInput("municipalImpactFeeRate", label = h6("Municipal Impact Fee Rate (%)"), min = 0, 
+        max = 20, value = 3, step=.25)
+
+hr()
+
+```
+
+Row {data-height=125}
+-----------------------------------------
+### Sales YTD
+```{r}
+totSalesVB <- rpt_sales_Total(MSFS_df,'year')
+totSalesVB <- formattable::currency(tail(totSalesVB$Sales,1)/1000000,digits=2)
+renderValueBox ({
+  valueBox(totSalesVB,
+           caption = 'Sales YTD <br>(Millions)',
+           color='#A12F28')
+})
+```
+
+### Sales since last update
+```{r}
+totSalesLP <- rpt_sales_Total_Between(MSFS_df, as.Date(ccc_LastPeriod,format="%Y%m%d"), as.Date(ccc_ThisPeriod,format="%Y%m%d"))
+totSalesLP <- totSalesLP/1000000
+
+renderValueBox ({
+  valueBox(formattable::currency(totSalesLP, digits=2),
+  caption = paste('Sales since ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y"), '<br>(Millions)',sep=""),
+  color='#A12F28')
+})
+
+```
+
+Row {.tabset}
+-----------------------------------------
+### Total Sales at Retail (Annual)
+``` {r}
+
+renderPlotly({
+  totals <- totASales %>%
+    ungroup() %>%
+    group_by(Period) %>%
+    summarize(total = sum(Sales))%>%
+    ungroup()
+  totals$total <- formattable::currency(totals$total/1000000, format='d')
+    
+  totASales %>%
+    ggplot(aes(x=Period, y=Sales/1000000, fill=ProductCategoryName)) +
+    geom_bar(position='stack', stat='identity') +
+    ylab("$US (millions)") +
+    xlab("") +
+    labs(fill = "Product") +
+    scale_x_date(date_labels="%Y",date_breaks  ="1 year")+
+    geom_text(data=totals ,
+              aes(x=Period, 
+                  y=total,
+                  label=paste("$ ",formatC(total, format="f", digits=2, big.mark=",")), 
+                  fill=NULL),
+            nudge_y = 40) 
+  })
+```
+
+### Total Sales at Retail (Quarter)
+``` {r}
+
+totQSales <-rpt_sales_byCategory(MSFS_df,'quarter')
+totalsQ <- totQSales %>%
+    ungroup() %>%
+    group_by(Period) %>%
+    summarize(total = sum(Sales))%>%
+    ungroup()
+  totalsQ$total <- formattable::currency(totalsQ$total/1000000, format='d')
+totQSales$Period <- paste0(year(totQSales$Period),        
+                             "- Q",
+                             quarter(totQSales$Period))
+totalsQ$Period <- paste0(year(totalsQ$Period),        
+                             "- Q",
+                             quarter(totalsQ$Period))
+
+renderPlotly(
+  totQSales %>%
+  ggplot(aes(x=Period, y=Sales/1000000, fill=ProductCategoryName)) +
+    geom_bar(position='stack', stat='identity') +
+    ylab("$US (millions)") +
+    labs(fill = "Product") +
+  geom_text(data=totalsQ ,
+              aes(x=Period,
+                  y=total,
+                  label=paste("$",formatC(total, format="f", digits=0, big.mark=",")),
+                  fill=NULL),
+            nudge_y = 20)
+)
+```
+
+### Total Sales at Retail (Month)
+``` {r}
+totMSales <-rpt_sales_byCategory(MSFS_df,'month')
+renderPlotly(totMSales %>%
+  ggplot(aes(x=Period, y=Sales/1000000, fill=ProductCategoryName)) +
+    geom_bar(position='stack', stat='identity') +
+    ylab("$US (millions)") +
+    labs(fill = "Product")+
+    scale_y_continuous(labels=comma) +
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+  )
+```
+### Data (Quarter)
+``` {r}
+totQSales <-rpt_sales_byCategory(MSFS_df,'quarter')
+totQSales$Period <- paste0(year(totQSales$Period),        
+                             "- Q",
+                             quarter(totQSales$Period))
+datatable(totQSales) %>%
+  formatCurrency( 'Sales', digits=0)# %>%
+
+```
+
+### Data (Annual)
+``` {r}
+totASales <-rpt_sales_byCategory(MSFS_df,'year')
+datatable(totASales) %>%
+  formatCurrency( 'Sales', digits=0) %>%
+  formatDate('Period',method='getFullYear') 
+  
+```
+
+### Data (Month)
+``` {r}
+totMSales <-rpt_sales_byCategory(MSFS_df,'month')
+
+datatable(totMSales) %>%
+  formatCurrency( 'Sales', digits=0) #%>%
+
+```
+
+Row {data-height=125}
+-----------------------------------------
+### Price Current Month
+```{r}
+two_months <- tail(MPPO_month_df, n=2)
+
+price1 <- formattable::currency(two_months[2,]$avg_price,digits=2)
+renderValueBox ({
+  valueBox(price1,
+           caption = paste('Avg. Retail Price 1 Oz Bud <br>',format(two_months[2,]$month,"%B %Y")),
+           color='blue')
+})
+```
+
+### Price Prior Month
+```{r}
+two_months <- tail(MPPO_month_df, n=2)
+
+price2 <- formattable::currency(two_months[1,]$avg_price,digits=2)
+renderValueBox ({
+  valueBox(price2,
+           caption = paste('Avg. Retail Price 1 Oz Bud <br>',format(two_months[1,]$month,"%B %Y")),
+           color='blue')
+})
+```
+
+### Percent Change
+```{r}
+
+renderValueBox ({
+  valueBox(percent(as.numeric((price1-price2)/price2,2)),
+           caption = 'Percent Change from Prior Month',
+           color='blue')
+})
+```
+
+Row {.tabset}
+-----------------------------------------
+### Benchmark Retail Price for Cannabis Flower (1 oz) - Daily Average
+
+```{r}
+renderPlotly ({
+  maxPrice <- max(MPPO_df$AverageRetailPriceperOz)
+  MPPO_df %>% 
+     ggplot(aes(x=SoldDate, y=AverageRetailPriceperOz)) +
+     geom_point(color='blue', size=.5) +
+     geom_smooth() +
+     xlab("") +
+     ylab("$US") +
+     ylim(50,500)+
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1)) +
+     labs(caption = oa_footnote)
+
+})
+```
+
+### Benchmark Retail Price for Cannabis Flower (1 oz) - Monthly Average
+```{r}
+renderPlotly ({
+  maxPrice <- max(MPPO_month_df$avg_price)
+  MPPO_month_df %>% 
+     ggplot(aes(x=month, y=avg_price)) +
+     geom_point(color='blue') +
+     geom_smooth() +
+     xlab("") +
+     ylab("$US") +
+     ylim(0,1.2*maxPrice)+
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1)) +
+     labs(caption = oa_footnote)
+
+})
+```
+
+### Data - Daily Average
+```{r}
+renderDataTable ({
+  datatable(MPPO_df, colnames = c("Sold Date" = 3, "Average Price per Ounce" = 2)) %>%
+    formatCurrency( "Average Price per Ounce", digits=2)%>%
+  formatDate('Sold Date',method='toLocaleDateString')
+})
+```
+
+### Data - Month Average
+```{r}
+renderDataTable ({
+  datatable(MPPO_month_df, colnames = c("Month" = 2, "Average Price per Ounce" = 3)) %>%
+    formatCurrency( "Average Price per Ounce", digits=2)%>%
+  formatDate('Month',method='toLocaleDateString')
+})
+```
+
+Row {data-height=125}
+-----------------------------------------
+
+### Estimated MA Tax Revenue YTD
+```{r}
+totSales <- rpt_sales_Total(MSFS_df,'year')
+
+renderValueBox ({
+  totRevVB <- formattable::currency(tail((input$maSalesTaxRate + input$maExciseTaxRate + input$municipalImpactFeeRate)/100*totSales$Sales,1)/1000000,digits=2)
+  valueBox(totRevVB,
+           caption = 'Estimated Total Tax Revenue YTD<br>(Millions)',
+           color = '#7B580A')
+})
+```
+
+### Tax Revenue since last update
+```{r}
+
+renderValueBox ({
+  totTaxLP <- formattable::currency((input$maSalesTaxRate + input$maExciseTaxRate + input$municipalImpactFeeRate)/100*(totSalesLP), digits=2)
+  valueBox(totTaxLP,
+  caption = paste('Tax Revenue since ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y"), '<br>(Millions)',sep=""),
+  color='#7B580A')
+})
+
+```
+
+### Estimated MA State Revenue YTD
+```{r}
+totSales <- rpt_sales_Total(MSFS_df,'year')
+
+renderValueBox ({
+  stateRevVB <- formattable::currency(tail((input$maSalesTaxRate + input$maExciseTaxRate)/100*totSales$Sales,1)/1000000,digits=2)
+  valueBox(stateRevVB,
+           caption = 'Estimated State Tax Revenue YTD <br>(Millions)',
+           color = '#7B580A')
+})
+```
+
+### Estimated Municipality Tax Revenue YTD
+```{r}
+totSales <- rpt_sales_Total(MSFS_df,'year')
+
+renderValueBox ({
+  munRevVB <- formattable::currency(tail( input$municipalImpactFeeRate/100*totSales$Sales,1)/1000000,digits=2)
+  valueBox(munRevVB,
+           caption = 'Estimated Municipality Tax Revenue YTD <br>(Millions)',
+           color = '#7B580A')
+})
+```
+
+Row {.tabset}
+-----------------------------------------
+### Estimated Tax Revenue (City and State)
+``` {r}
+renderPlotly({
+
+totTSales <-rpt_sales_Total(MSFS_df,'year')
+
+#totTSales$Period <- year(totTSales$Period)
+
+  totTSales <- totTSales %>% mutate(
+  'MA State Sales Tax' = Sales* input$maSalesTaxRate/100,
+  'MA State Excise Tax' = Sales* input$maExciseTaxRate/100,
+  'Municipal Impact Fees' = Sales * input$municipalImpactFeeRate/100
+)
+  totTSales <- pivot_longer(totTSales,!c(Period,Sales),names_to='Tax_Type',values_to = 'Amount')
+  
+totalsT <- totTSales %>%
+  group_by(Period) %>%
+  summarize(total=sum(Amount))
+totalsT$total <- totalsT$total/1000000
+
+totTSales %>% ggplot(aes(x = Period, y = Amount/1000000, fill=Tax_Type))+
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values=c('#F5C865','#BD8D22','#7B580A'))+
+  ylab('$US (millions)')+
+  xlab("")+
+  labs(fill="") +
+  scale_x_date(date_labels="%Y",date_breaks  ="1 year")+
+  geom_text(data=totalsT ,
+              aes(x=Period,
+                  y=total,
+                  label=paste("$",formatC(total, format="f", digits=2, big.mark=",")),
+                  fill=NULL),
+            nudge_y = 20)
+
+})
+
+```
+
+### Data
+``` {r}
+dfTSales <- reactive({
+  totTSales <-rpt_sales_Total(MSFS_df,'year')
+  totTSales <- totTSales %>% mutate(
+    taxStateSales = Sales* input$maSalesTaxRate/100,
+    taxStateExcise = Sales* input$maExciseTaxRate/100,
+    taxCityExcise = Sales * input$municipalImpactFeeRate/100,
+    totalTax = taxStateSales +taxStateExcise +taxCityExcise)
+  datatable(totTSales, colnames=c("MA State Sales Tax" = 4,"MA State Excise Tax"=5, "Total Individual City Tax" = 6,"Total Tax"=7)) %>%
+  formatCurrency( c('Sales', 'MA State Sales Tax', "MA State Excise Tax",
+    "Total Individual City Tax","Total Tax"), digits=0)%>%
+  formatDate('Period',method='getFullYear')
+})
+DT::renderDataTable(dfTSales())
+
+```
+
+Row {data-height=125}
+-----------------------------------------
+### Final Licensees Operating
+```{r}
+totLic <- MELA_df %>% 
+  filter(commence_ind) %>% 
+  summarize(n=n())
+renderValueBox ({
+  valueBox(totLic,
+           caption = 'Total Number of Final Licensees Operating',
+           color = 'darkblue')
+})
+```
+
+### Change in Final Licensees Operating 
+```{r}
+totLicTP <- MELA_Approved_df %>% 
+  filter(commence_ind) %>% 
+  summarize(n=n())
+totLicLP <- MELA_Approved_LastPeriod_df %>%
+  filter(commence_ind) %>%
+  summarize(n=n())
+
+renderValueBox ({
+  valueBox(totLicTP - totLicLP,
+           caption = paste('Change in Final Licenses Operating since ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y"),sep=""),
+           color = 'darkblue')
+})
+```
+
+### Licenses Surrendered
+```{r}
+totLicSur <- MELA_df %>% 
+  filter(lic_status == "SURRENDERED") %>% 
+  summarize(n=n())
+renderValueBox ({
+  valueBox(totLicSur,
+           caption = 'Number of Licenses Surrendered',
+           color = 'darkblue')
+})
+```
+
+
+
+### Change in Number of Licenses Surrendered
+```{r}
+totLicSurTP <- MELA_df %>% 
+  filter(lic_status == "SURRENDERED") %>% 
+  summarize(n=n())
+totLicSurLP <- MELA_A_LastPeriod_df %>%
+  filter(lic_status == "SURRENDERED") %>%
+  summarize(n=n())
+renderValueBox ({
+  valueBox(totLicSurTP - totLicSurLP,
+           caption = paste('Change in Number of Licenses Surrendered since ', format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y"),sep=""),
+           color = 'darkblue')
+})
+```
+
+Row {.tabset}
+----------------------------------------
+### Licensee Activity
+``` {r}
+licSummary <- MELA_df %>% group_by(license_type, approved_license_type) %>% summarize(n=n())
+licSummary$approved_license_type <- factor(licSummary$approved_license_type, levels = c("IN PROCESS", "PROVISIONAL CONSIDERATION", "PROVISIONAL LICENSE", "FINAL LICENSE"))
+
+
+renderPlotly(
+  ggplot(licSummary, aes(x = license_type, y = n, fill = forcats::fct_rev(approved_license_type)))+
+    geom_bar(position="stack", stat="identity") + 
+    scale_fill_manual(values=c('darkblue','blue','darkturquoise','lightblue1'))+
+    coord_flip()+
+    xlab("") + 
+    ylab("Number")+
+    labs(fill="")
+)
+    
+
+```
+
+
+### Data - Licenses Surrendered
+```{r}
+renderDataTable (MELA_df %>% 
+  filter(lic_status == "SURRENDERED"))
+```
+
+Row {data-height=125}
+-----------------------------------------
+### Number of Dispensaries
+``` {r}
+renderValueBox ({
+  valueBox(nrow(active_dispensaries),
+           caption = 'Number of Dispensaries Commenced Operations',
+           color = 'darkgreen')
+})
+```
+
+
+### Dispensaries per 100,000
+``` {r}
+disp_per_capita <- nrow(active_dispensaries)/(sum(min_distance$POP2020)/100000)
+renderValueBox ({
+  valueBox(round(disp_per_capita,1),
+           caption = 'Dispensaries per 100,000 Residents',
+           color = 'darkgreen')
+})
+```
+
+### Average Annual Revenue per Dispensary
+``` {r}
+avg_rev_disp <- formattable::currency((rpt_sales_Total_Between(MSFS_df,seq(as.Date(ccc_ThisPeriod,"%Y%m%d"), length =2, by="-1 years")[2], as.Date(ccc_ThisPeriod,"%Y%m%d")))/nrow(active_dispensaries), digits=0)
+
+renderValueBox ({
+  valueBox(round(avg_rev_disp,1),
+           caption = 'Average Annual Revenue per Dispensary (TTM)',
+           color = 'darkgreen')
+})
+```
+
+### Average Distance to Nearest Dispensary
+``` {r}
+weighted_avg_min_distance <- sum(min_distance$POP2020*min_distance$distance)/sum(min_distance$POP2020)
+renderValueBox ({
+  valueBox(round(weighted_avg_min_distance,1),
+           caption = 'Average Distance to Nearest Dispensary (miles)',
+           color = 'darkgreen')
+})
+```
+
+### Greatest Distance to Nearest Dispensary
+``` {r}
+greatest_min_distance <- max(min_distance$distance)
+renderValueBox ({
+  valueBox(round(greatest_min_distance,1),
+           caption = 'Greatest Distance to Nearest Dispensary (miles)',
+           color = 'darkgreen')
+})
+```
+
+
+Row {.tabset}
+----------------------------------------
+### Consumer Distance to Nearest Dispensary
+``` {r}
+
+tags <- c("<= 1 mile","1< <= 2 miles","2 < <=5 miles","5 < <=10 miles","10 < <=15 miles","15 miles < ")
+min_distance$category <- cut(min_distance$distance, 
+                     breaks=c(0,1,2,5,10,15,20),
+                     labels=tags)
+temp <- min_distance %>%
+  group_by(category) %>%
+  summarize(totpopulation = sum(POP2020)) %>%
+  ungroup() %>%
+  mutate(percentPopulation =  totpopulation/sum(totpopulation))
+renderPlotly ({
+ggplot(data=temp, aes(x=category, y=percentPopulation)) +
+  geom_bar(stat="identity", fill="darkgreen", width=.75)+
+  xlab("Distance to Nearest Dispensary") +
+  ylab("Percent of State Population") +
+  scale_y_continuous(labels = scales::percent)
+})
+```
+
+### Consumer Distance to Nearest Dispensary by City/Town
+```{r}
+renderDataTable ({
+  datatable(min_distance, colnames = c("GEOID" = 2, "Name" = 3, "Population" = 4, "Distance to Nearest Dispensary (miles)" = 5)) 
+    
+})
+```
+
+Row {data-height=125}
+-----------------------------------------
+### Number of Cultivators
+``` {r}
+renderValueBox ({
+  d <- MCFinalOperating() %>%
+    summarize(n=n())
+  valueBox(d$n,
+           caption = "Number of Cultivators <br> Commenced Operations",
+                        color="darkmagenta")
+})
+```
+
+### Maximum Canopy Available
+``` {r}
+renderValueBox ({
+  d2 <- MCFinalOperating() %>%
+    summarize(n=sum(Canopy_Available))
+  valueBox(scales::label_comma(accuracy = 1)(d2$n),
+           caption = "Maximum Canopy Available (sq.ft.)",
+                        color="darkmagenta")
+})
+```
+
+### Maximum Canopy Indoor
+```{r}
+renderValueBox({
+  d3 <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k3 <- as.numeric(d3[d3$cultivation_environment=='Indoor',2])
+  valueBox(scales::label_comma(accuracy = 1)(k3),
+           caption = "Maximum Canopy Available - Indoor (sq.ft.)",
+                        color="darkmagenta")
+  })
+```
+
+### Maximum Canopy Outdoor
+```{r}
+renderValueBox({
+  d4 <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k4 <- as.numeric(d4[d4$cultivation_environment=='Outdoor',2])
+  valueBox(scales::label_comma(accuracy = 1)(k4),
+           caption = "Maximum Canopy Available - Outdoor (sq.ft.)",
+                        color="darkmagenta")
+  })
+```
+
+
+Row
+----------------------------
+### Estimated Cannabis Flower Yield
+```{r}
+renderPlotly ({
+  
+yieldCanopyBasis_df() %>% 
+  ggplot(aes(x=Period, y=totEffectiveCapacity, fill=cultivation_environment))+
+  geom_bar(stat='identity', color='black', size=.25) +
+  ylab("Cannabis Flower Yield (lbs)")+
+  xlab("") +
+  scale_fill_manual(values=c("darkmagenta","darkmagenta"))+
+  scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none')+
+  scale_y_continuous(label=comma)
+ } )
+
+```
+
+Licensee Activity {data-navmenu="Licensees"}
+===========================================================
+Inputs {.sidebar data-width=300} 
+-----------------------------------------------------------------------
+``` {r}
+h4("License Activity")
+
+radioButtons("whichEstablishmentType",
+             label = h5("Which license type:"),
+             choices = c(unique(MELA_df$license_type))
+)
+hr()
+
+h5("Mapping Controls")
+
+checkboxGroupInput("whichLicenseType",
+             label = h6("Which licensing stages to include: "),
+             choices = c(unique(MELA_df$approved_license_type)),
+             select = c("FINAL LICENSE","PROVISIONAL LICENSE","PROVISIONAL CONSIDERATION"))
+
+
+
+materialSwitch("showCommencedOperations",
+             label = h6("Show Commenced Operations Only on map"),
+             status = "primary",
+             value = FALSE
+             )
+materialSwitch("showNewSinceLastUpdate",
+             label = h6("Show New Since Last Update Only in map"),
+             status = "primary",
+             value = FALSE
+             )
+materialSwitch("showNewInLastYear",
+             label = h6("Show New In Last Year Only in map"),
+             status = "primary",
+             value = FALSE
+             )
+
+conditionalPanel(
+  condition = "input.whichEstablishmentType == 'Marijuana Cultivator'",
+  hr(),
+  checkboxGroupInput("whichTiers",
+    label = h6("Select Tiers to include"),
+    choices = c(paste("Tier" ,as.character(tiers$tier)), "All"),
+    selected = "All",
+    inline = TRUE),
+  
+  checkboxGroupInput("whichCultEnv",
+    label = h6("Select cultivation environments to include"),
+    choices = yields$Cultivation_Environment,
+    selected = yields$Cultivation_Environment,
+    inline = TRUE),
+ hr() 
+)
+
+
+
+```
+
+Row {data-height = 50}
+----------------------------------
+### Number of Total Final Licenses
+``` {r}
+
+licThisPeriod_df <- reactive ({
+  MELA_df %>%
+  filter(license_type %in% input$whichEstablishmentType)
+})
+  
+licLastPeriod_df <-reactive ({
+    MELA_LastPeriod_df %>%
+      filter(license_type %in% input$whichEstablishmentType)
+})
+
+renderValueBox({
+  totfin <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'FINAL LICENSE') %>%
+    summarize(n=n())
+    
+  valueBox (
+    value <- totfin,
+    caption = 'Total Final Licensees',
+    color = 'blue'
+  )
+})
+```
+
+### Number of Final Licenses Commenced Operations
+
+``` {r}
+
+
+  renderValueBox({
+  finop <- if ("commence_ind" %in% colnames(licThisPeriod_df())){
+    licThisPeriod_df() %>% filter(commence_ind == TRUE) %>% summarize(n=n())}
+  else {0}
+    
+  valueBox (finop,
+  caption = 'Final Licensees Commenced Operations',
+  color = 'blue'
+  )
+})
+
+```
+
+### Number of Provisional Licenses Approved
+``` {r}
+renderValueBox({
+  prov <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL LICENSE') %>% 
+    summarize(n=n())
+    
+  valueBox (
+    value <- prov,
+    caption = 'Provisional Licensees',
+    color = 'blue'
+  )
+})
+```
+
+### Provisional Consideration
+``` {r}
+renderValueBox({
+  provcons <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL CONSIDERATION') %>% 
+    summarize(n=n())
+    
+  valueBox (
+    value <- provcons,
+    caption = 'Provisional Consideration',
+    color = 'blue'
+  )
+})
+```
+
+### Number of In-process Applications
+``` {r}
+renderValueBox({
+  pend <- licThisPeriod_df() %>%
+    filter(approved_license_type == 'IN PROCESS') %>%
+    summarize(n=n())
+
+  valueBox (
+    value <- pend,
+  caption = 'In Process Applications',
+  color = 'blue'
+  )
+})
+```
+
+Row {data-height = 50}
+----------------------------------
+### Change in Total Final Licenses
+``` {r}
+renderValueBox({
+  totfinTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'FINAL LICENSE') %>%
+    summarize(n=n())
+  totfinLP <-licLastPeriod_df() %>%
+    filter(approved_license_type == 'FINAL LICENSE') %>%
+    summarize(n=n())
+  
+  valueBox (
+    value <- totfinTP-totfinLP, 
+    caption = paste('Net Change in Total Final Licenses since ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")),
+    color = '#EDD138'
+  )
+ 
+})
+
+```
+
+### Change in Final Licenses Commenced Operations
+
+``` {r}
+  renderValueBox({
+  finopTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'FINAL LICENSE', commence_ind) %>%
+    summarize(n=n())
+  finopLP <- licLastPeriod_df() %>%
+    filter(approved_license_type == 'FINAL LICENSE', commence_ind) %>%
+    summarize(n=n())
+  
+  valueBox (
+    value <- finopTP-finopLP,
+    caption = paste('Net Change in Final Commenced Operations since:', format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")),
+  color = '#EDD138'
+  )
+})
+
+```
+
+### Change in Provisional Licenses 
+``` {r}
+renderValueBox({
+  provTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL LICENSE') %>% 
+    summarize(n=n())
+  provLP <- licLastPeriod_df() %>%
+    filter(approved_license_type == 'PROVISIONAL LICENSE') %>% 
+    summarize(n=n())
+    
+  valueBox (provTP - provLP,
+            caption = paste('Net Change in Provisional Licenses since: ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")),
+  color = '#EDD138'
+  )
+})
+```
+
+### Provisional Consideration
+``` {r}
+
+renderValueBox({
+  provconsTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL CONSIDERATION') %>% 
+    summarize(n=n())
+  provconsLP <- licLastPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL CONSIDERATION') %>% 
+    summarize(n=n()) 
+  
+  valueBox (provconsTP-provconsLP,
+            caption = paste('Net Change in Provisional Consideration Licenses since:  ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")),
+    color = '#EDD138'
+  )
+})
+```
+
+### Change in Number of In-process Applications
+``` {r}
+renderValueBox({
+  pendTP <- licThisPeriod_df() %>%
+    filter(approved_license_type == 'IN PROCESS') %>%
+    summarize(n=n())
+  pendLP <- licLastPeriod_df() %>%
+    filter(approved_license_type == 'IN PROCESS') %>%
+    summarize(n=n())
+
+  valueBox (pendTP - pendLP,
+            caption = paste('Change in In Process Applications since:  ',format(as.Date(ccc_LastPeriod,"%Y%m%d"),format="%b %d, %Y")),
+  color = '#EDD138'
+  )
+})
+```
+
+Row {data-height = 50}
+----------------------------------
+### YTD New Total Final Licenses
+``` {r}
+renderValueBox({
+  totfinTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'FINAL LICENSE') %>%
+    filter(year(cnb_date_of_final_licensure.1)>=year(Sys.Date())) %>%
+    summarize(n=n())
+  
+  valueBox (
+    value <- totfinTP, 
+    caption = paste('Net Change in Total Final Licenses since ',format(as.Date(paste(year(Sys.Date()),'0101',sep=''),"%Y%m%d"),format="%b %d, %Y")),
+    color = '#C4C188'
+  )
+ 
+})
+
+```
+
+### YTD Final Licenses Commenced Operations
+
+``` {r}
+
+
+  renderValueBox({
+  finop <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'FINAL LICENSE') %>%
+    filter(year(commence_operations_date)>=year(Sys.Date())) %>%
+    summarize(n=n())
+    
+  valueBox (
+    value <- finop,
+    caption = paste('Net Change in Final Commenced Operations since:', format(as.Date(paste(year(Sys.Date()),'0101',sep=''),"%Y%m%d"),format="%b %d, %Y")),
+  color = '#C4C188'
+  )
+})
+
+```
+
+### YTD Change in Provisional Licenses 
+``` {r}
+renderValueBox({
+  provTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL LICENSE') %>% 
+    filter(year(application_approved_date) >= year(Sys.Date())) %>%
+    summarize(n=n())
+    
+  valueBox (provTP,
+            caption = paste('Net Change in Provisional Licenses since: ',format(as.Date(paste(year(Sys.Date()),'0101',sep=''),"%Y%m%d"),format="%b %d, %Y")),
+  color = '#C4C188'
+  )
+})
+```
+
+### YTD Change Provisional Consideration
+``` {r}
+
+renderValueBox({
+  provconsTP <- licThisPeriod_df() %>% 
+    filter(approved_license_type == 'PROVISIONAL CONSIDERATION') %>% 
+    filter(year(application_approved_date) >= year(Sys.Date())) %>%
+    summarize(n=n())
+  
+  
+  valueBox (provconsTP,
+            caption = paste('Net Change in Provisional Consideration Licenses since:  ',format(as.Date(paste(year(Sys.Date()),'0101',sep=''),"%Y%m%d"),format="%b %d, %Y")),
+    color = '#C4C188'
+  )
+})
+```
+
+### YTD Change Number of In-process Applications
+``` {r}
+renderValueBox({
+  pendTP <- licThisPeriod_df() %>%
+    filter(approved_license_type == 'IN PROCESS') %>%
+    filter(year(application_created_date) >= year(Sys.Date())) %>%
+    summarize(n=n())
+
+
+  valueBox (pendTP,
+            caption = paste('Net New Applications since: ',format(as.Date(paste(year(Sys.Date()),'0101',sep=''),"%Y%m%d"),format="%b %d, %Y")),
+  color = '#C4C188'
+  )
+})
+```
+
+Row {.tabset .tabset-fade data-height=600} 
+----------------------------------
+### Map
+```{r}
+
+states <- map("state", regions="massachusetts", col="navy", fill=TRUE, plot=FALSE) 
+counties <- map("county", regions="massachusetts")
+
+
+filt_df <- reactive({
+      tiers_var <- if('All' %in% input$whichTiers){
+                  tiers$tier
+                 } else {
+                  as.numeric(substring(input$whichTiers,6,7))
+                 }
+      df <- licThisPeriod_df() %>% 
+        filter(approved_license_type %in% toupper(input$whichLicenseType))
+      
+      if(input$whichEstablishmentType == "Marijuana Cultivator") {
+        df <- df %>%
+          filter(tier %in% tiers_var,
+                 cultivation_environment %in% input$whichCultEnv
+                 )
+      }
+            
+      if(input$showCommencedOperations){
+             df <- df %>% filter(commence_ind == TRUE)
+      }
+      
+      if(input$showNewInLastYear){
+             df <- df %>% 
+              filter((year(application_created_date) >= year(Sys.Date())) |
+                    (year(application_approved_date) >= year(Sys.Date())) |
+                    (year(cnb_date_of_final_licensure.1) >= year(Sys.Date())) |
+                    (year(commence_operations_date) >= year(Sys.Date())))
+      }
+      
+      if(input$showNewSinceLastUpdate){
+             df <- df %>% 
+              filter((application_created_date >= as.Date(ccc_LastPeriod, format="%Y%m%d")) |
+                    (application_approved_date >= as.Date(ccc_LastPeriod, format="%Y%m%d")) |
+                    (cnb_date_of_final_licensure.1 >= as.Date(ccc_LastPeriod, format="%Y%m%d")) |
+                    (commence_operations_date >= as.Date(ccc_LastPeriod, format="%Y%m%d")))
+      }
+      
+      df
+    })
+
+
+
+#   mymap <- reactive({
+#     pal <- colorFactor(c("blue", "white","pink","#EDD138","orange"), domain = c("FINAL LICENSE", "IN PROCESS","PROVISIONAL LICENSE","PROVISIONAL CONSIDERATION","IN PROCESS"))
+#        leaflet(data = filt_df()) %>% addTiles() %>%
+#         addPolygons(data = states, 
+#                     fillColor = "gold", 
+#                     fillOpacity=.1, 
+#                     stroke = TRUE,
+#                     color = "black",
+#                     weight = 2) %>%
+#       
+#       addCircleMarkers(~longitude, ~latitude, 
+#                        radius = if(input$whichEstablishmentType == "Marijuana Cultivator") {
+#                          ~sqrt(tier)*5}
+#                        else {10},
+#                        fillColor = ~pal(approved_license_type),
+#                        stroke = TRUE,
+#                        weight = 2,
+#                        color="grey",
+#                        fillOpacity = .6,
+#                        popup = ~paste0("<b>License: </b>",license_number,"<br><b> Name: </b>", business_name,'<br><b> Status: </b><br>',approved_license_type,'<br><b>Cult. Environ.: </b>',cultivation_environment,'<br><b>Tier: </b>',tier))
+#         
+#     })
+#   
+# renderLeaflet(mymap())
+
+```
+
+### Data
+```{r}
+DT::renderDataTable(datatable(filt_df()))
+                              
+```
+
+Licensee Detail {data-navmenu="Licensees"}
+=================================================================
+Inputs {.sidebar data-width=300 }
+-----------------------------------------
+<h5>Licensee Detail</h5>
+
+Explore how individual licensees have navigated the path from application to operation.  
+
+```{r}
+
+record <- reactive({
+  MELA_df[MELA_df$license_number %in% trimws(gsub("-.*$","",input$select_Licensee)),]
+})
+
+hr()
+h6(paste('Date of source files: ', format(as.Date(ccc_ThisPeriod,"%Y%m%d"),format="%b %d, %Y")))
+hr()
+
+selectInput('lictype', 
+            label = h6('These License Types Only: '), 
+            choices = sort(unique(MELA_df$license_type)), 
+            selected = NULL, 
+            multiple = TRUE)
+
+selectInput('citytown', 
+            label = h6('These Cities or Towns Only: '), 
+            choices = sort(unique(MELA_df$business_city)), 
+            selected = NULL, 
+            multiple = TRUE)
+
+ # checkboxGroupInput("dbetype", 
+ #                    label = h6("These Disadvantged Business Types Only: "), 
+ #                    choices = list("Minority Owned" = 1,"Woman Owned" = 2,"Veteran Owned" = 3,"Disability Owned" = 4,"LGBTQ Owned" = 5),
+ #                    selected = NULL)
+actionButton("reset_input", "Reset filters")
+    
+ 
+ pickerInput(
+   inputId = "select_Licensee",
+   label = h6("Select licensee"), 
+   options = pickerOptions(liveSearch = TRUE,
+                  liveSearchPlaceholder	= "Search for: ",
+                  liveSearchStyle = 'contains'),
+   choices = sort(unique(paste0(MELA_df$license_number, " - ", MELA_df$business_name)))
+   )
+
+ 
+ observeEvent(input$lictype, 
+              updatePickerInput(session,"select_Licensee",
+                                choices = {
+                                  d <- MELA_df
+                                  if(is.null(input$lictype)) {
+                                    sort(unique(paste0(MELA_df$license_number, " - ", MELA_df$business_name)))
+                                  }
+                                  d<-
+                                    if(!is.null(input$lictype)) {
+                                      d %>%
+                                      filter(license_type %in% input$lictype)
+                                    }
+                                    if (!is.null(input$citytown)) {
+                                      d <- d %>%
+                                        filter(business_city %in% input$citytown)
+                                    }
+                                  sort(unique(paste0(d$license_number, " - ", d$business_name)))
+                                })
+ )
+ observeEvent(input$lictype,
+              updateSelectInput(session, "citytown",
+                                choices = {
+                                  d <- MELA_df
+                                  if(is.null(input$lictype)) {
+                                    sort(unique(MELA_df$business_city))
+                                  }
+                                  
+                                    if(!is.null(input$lictype)) {
+                                      d <- d %>%
+                                      filter(license_type %in% input$lictype)
+                                      sort(unique(d$business_city))
+                                    }
+                                }
+ ))
+                                
+ observeEvent(input$citytown,
+              updatePickerInput(session, "select_Licensee",
+                                choices = {
+                                 d <- MELA_df
+                                if(!is.null(input$lictype)) {
+                                      d <- d %>%
+                                      filter(license_type %in% input$lictype)
+                                    }
+                                    if (!is.null(input$citytown)) {
+                                      d <- d %>%
+                                        filter(business_city %in% input$citytown)
+                                    }
+                                  sort(unique(paste0(d$license_number, " - ", d$business_name)))}
+                                ))
+observeEvent(input$reset_input, {
+  updatePickerInput(session, "select_Licensee", 
+                    choices = sort(unique(paste0(MELA_df$license_number, " - ", MELA_df$business_name))))
+  updateSelectInput(session, "citytown", 
+                    choices = sort(unique(MELA_df$business_city)))
+  updateSelectInput(session, "lictype",
+                    choices = sort(unique(MELA_df$license_type)))
+})
+
+```
+
+
+Row {data-height = 100}
+----------------------------------
+
+### 
+
+```{r}
+renderValueBox({
+  valueBox(record()$business_name,
+           color='blue')
+})
+```
+
+### 
+
+```{r}
+renderValueBox({
+  valueBox(record()$license_type,
+           caption = if (record()$license_type == 'Marijuana Cultivator' || record()$license_type == 'Craft Marijuana Cooperative') {
+             paste('Environment: ', record()$cultivation_environment, '<br />','Tier: ',record()$tier)}
+           else {" "},
+           color = 'blue')
+})
+```
+
+### License Number
+```{r}
+renderValueBox({
+  valueBox(record()$license_number,
+           color='blue')
+})
+```
+
+Row {data-height = 100}
+----------------------------------
+### 
+```{r}
+renderValueBox({
+  valueBox(str_to_title(record()$approved_license_type),
+           caption = if (record()$approved_license_type == 'FINAL LICENSE' && record()$commence_ind == TRUE) {
+             paste('Commenced operations on: ', record()$commence_operations_date)}
+           else if (record()$approved_license_type == 'FINAL LICENSE' && record()$commence_ind == FALSE) {
+             "Has not commenced operations."
+           }
+           else {
+             " "
+           },
+           color='blue')
+})
+```
+
+### License Status
+```{r}
+renderValueBox({
+  valueBox(str_to_title(record()$lic_status),
+           color='blue')
+})
+```
+
+### Application Status
+```{r}
+renderValueBox({
+  valueBox(str_to_title(record()$application_status),
+           color='blue')
+})
+```
+
+### License Expiration Date
+```{r}
+renderValueBox({
+  valueBox(record()$lic_expiration_date,
+           color='blue')
+})
+```
+
+Row {data-height = 50}
+----------------------------------
+### Minority Owned Business
+```{r}
+renderValueBox({
+  t <- if (grepl('Minority', record()$dbe)) {"Yes"} else {"No"}
+  valueBox(t,
+           color='lightblue')
+})
+```
+
+### Woman Owned Business
+```{r}
+renderValueBox({
+  t <- if (grepl('Woman',record()$dbe)) {"Yes"} else {"No"}
+  valueBox(t,
+           color='lightblue')
+})
+```
+
+### Veteran Owned Business
+```{r}
+renderValueBox({
+  t <- if (grepl('Veteran',record()$dbe)) {"Yes"} else {"No"}
+  valueBox(t,
+           color='lightblue')
+})
+```
+
+### Disability Owned Business
+```{r}
+renderValueBox({
+  t <- if (grepl('Disability',record()$dbe)) {"Yes"} else {"No"}
+  valueBox(t,
+           color='lightblue')
+})
+```
+
+### LGBTQ Owned Business
+```{r}
+renderValueBox({
+  t <- if (grepl('Gay',record()$dbe)) {"Yes"} else {"No"}
+  valueBox(t,
+           color='lightblue')
+})
+```
+
+
+### Priority Review
+```{r}
+renderValueBox({
+  t <- case_when(
+    record()$priority == TRUE ~ 'Yes',
+    record()$priority == FALSE ~ 'No'
+  )
+  valueBox(t, color='lightblue')
+})
+```
+
+
+Row {data-height = 200}
+------------------------------------
+
+### Company Information
+
+```{r}
+renderUI ({
+  if(!record()$business_address_2 == ""){
+    HTML(paste(
+      "<b><u>Business Address</u></b>",
+      record()$business_address_1,
+      record()$business_address_2,
+      paste(record()$business_city,'',record()$business_state,'', record()$business_zipcode), "<br />",
+      "<b><u>Establishment Address</u></b>",
+      record()$establishment_address,
+      paste(record()$establishment_city,'',record()$establishment_state,'', record()$establishment_zipcode), "<br />",
+      "<b><u>Mailing Address</u></b>",
+      record()$mailing_address_1,
+      record()$mailing_address_2,
+      paste(record()$mailing_city,' ', record()$mailing_state,'', record()$mailing_zipcode), sep = '<br/>'))
+  } else {
+    HTML(paste(
+      "<b><u>Business Address</u></b>",
+      record()$business_address_1,
+      paste(record()$business_city,'',record()$business_state,'', record()$business_zipcode), "<br />",
+      "<b><u>Establishment Address</u></b>",
+      record()$establishment_address,
+      paste(record()$establishment_city,'',record()$establishment_state,'', record()$establishment_zipcode), "<br />",
+      "<b><u>Mailing Address</u></b>",
+      record()$mailing_address_1,
+      record()$mailing_address_2,
+      paste(record()$mailing_city,' ', record()$mailing_state,'', record()$mailing_zipcode), sep= '<br/>'))
+  }
+})
+```
+
+### Location
+
+``` {r}
+states <- map("state", regions="massachusetts", col="navy", fill=TRUE, plot=FALSE)
+
+# mymap2 <- reactive({
+#     
+#       leaflet(data = record()) %>% addTiles() %>%
+#         addPolygons(data = states, 
+#                     fillColor = "gold", 
+#                     fillOpacity=.1, 
+#                     stroke = TRUE,
+#                     color = "black",
+#                     weight = 2) %>%
+#         
+#       addCircleMarkers(~longitude, ~latitude, 
+#                        radius = 10,
+#                        fillColor = 'blue',
+#                        stroke = TRUE,
+#                        weight = 2,
+#                        color="grey",
+#                        fillOpacity = .8,
+#                        popup = ~paste0("<b>License: </b>",license_number,"<br><b> Name: </b>", business_name,'<br><b> Status: </b><br>',approved_license_type,'<br><b>Cult. Environ.: </b>',cultivation_environment,'<br><b>Tier: </b>',tier)) 
+#   
+# })   
+#   
+# renderLeaflet(mymap2())
+```
+
+Row {data-height=600 .tabset .tabset-fade}
+----------------------------------
+### Timeline
+
+``` {r}
+renderPlotly({
+  end <- case_when (
+    record()$approved_license_stages == "COMMENCE OPS" ~ 
+      c(record()$submitted_date,
+        record()$application_approved_date,
+        record()$lic_fee_payment_submitted_date,
+        record()$cnb_date_of_final_licensure.1,
+        record()$commence_operations_date,
+        Sys.Date()),
+    record()$approved_license_stages == "FINAL LICENSE" ~
+      c(record()$submitted_date,
+        record()$application_approved_date,
+        record()$lic_fee_payment_submitted_date,
+        record()$cnb_date_of_final_licensure.1,
+        Sys.Date(),
+        NA),
+    record()$approved_license_stages == "PROVISIONAL LICENSE" ~
+      c(record()$submitted_date,
+        record()$application_approved_date,
+        record()$lic_fee_payment_submitted_date,
+        Sys.Date(),
+        NA,
+        NA),
+    record()$approved_license_stages == "PROVISIONAL CONSIDERATION" ~
+      c(record()$submitted_date,
+        record()$application_approved_date,
+        Sys.Date(),
+        NA,
+        NA,
+        NA),
+    record()$approved_license_stages == "IN PROCESS" ~
+      c(record()$submitted_date,
+        Sys.Date(),
+        NA,
+        NA,
+        NA,
+        NA)
+  )
+  timeline_data <- data.frame(event = c("Application Start to Submit","Application to Provisional Consideration", "Provisional Consideration to Provisional", "Provisional to Final License", "Final License Approval to Commenced Operations","Operating"),
+                            start = c(record()$application_created_date,
+                                      record()$submitted_date,
+                                      record()$application_approved_date,
+                                      record()$lic_fee_payment_submitted_date,
+                                      record()$cnb_date_of_final_licensure.1,
+                                      record()$commence_operations_date),
+                            end,
+                            group = "")
+                            
+pl <- vistime(timeline_data, 
+        col.group = 'event',
+        optimize_y=TRUE)
+
+pl %>% layout(plot_bgcolor = "#E8E9E8", yaxis= list(showticklabels=FALSE))
+})
+
+```
+
+### Data
+``` {r}
+renderDataTable ({
+    datatable(record() %>% select (license_number, business_name, application_created_date, submitted_date, application_approved_date, lic_fee_payment_submitted_date, cnb_date_of_final_licensure.1, commence_operations_date)
+  )
+})
+```
+
+Licensing Lead Time Analysis {data-navmenu="Licensees"}
+========================================================
+Inputs {.sidebar data-width=300} 
+-------------------------------------------------------------------
+<h4>License Application Lead Time Analysis</h4>
+This lead time analysis was completed from the set of files dropped on `r format(as.Date(leadTimeFile,"%Y%m%d"),format="%b %d, %Y")` by the Cannabis Control Commission for the Commonwealth of Massachusetts.  <br><br>
+This analysis shows the distribution of lead times for each step in the licensing application process, as well as the total time from application to commencing operations. <br><br>
+Please note the population of licensees used in tabulating each statistic.
+<br>
+
+```{r}
+hr()
+h5("Controls")
+h6("Filters")
+checkboxGroupInput(
+  "selectLicenseType",
+  label= "License Types:",
+  choices = unique(lT_df$license_type),
+  selected = c('Marijuana Cultivator', 'Marijuana Retailer', 'Marijuana Product Manufacturer'),
+  inline = FALSE,
+  width = NULL,
+  choiceNames = NULL,
+  choiceValues = NULL
+)
+
+checkboxGroupInput(
+  "selectPriorityStatus",
+  label= "Priority Applicant Type:",
+  choices = unique(lT_df$application_classification),
+  selected = unique(lT_df$application_classification),
+  inline = FALSE,
+  width = NULL,
+  choiceNames = NULL,
+  choiceValues = NULL
+)
+hr()
+
+sliderInput("bins",
+            "Number of bins:",
+            min = 1,
+            max = 30,
+            value = 15)
+hr()
+
+
+leadTime_df <- reactive({
+  lT_df %>%
+    filter(license_type %in% input$selectLicenseType) %>%
+  filter(application_classification %in% input$selectPriorityStatus) %>%
+  mutate(A2Ptime = application_approved_date - application_created_date,
+         P2FnOtime = cnb_dt_of_final_licensure - application_approved_date,
+         FnO2FOtime = commence_operations_date - cnb_dt_of_final_licensure,
+         TotalTime = commence_operations_date - application_created_date)
+})
+
+h5("Definitions")
+```
+
+<b>Total lead times:</b> population is licensees that have successfully commenced operations.<br>
+<b>Application to Provisional License:</b> population is licensees that have achieved Provisional License status.<br>
+<b>Provisional to Final License:</b> population is licensees that have successfully achieved Final License Status (both those that have commenced operations and those who have not).<br>
+<b>Final to Commence Operations:</b> population is licensees that have successfully commenced operations. <br>
+
+Row {data-height=200}
+----------------------------------
+### Average Time from Application Submission to Commencing Operations
+```{r}
+
+renderValueBox ({
+  meanLT <- mean(leadTime_df()$TotalTime, na.rm=TRUE)
+  valueBox(paste(trunc(meanLT), ' Days'),
+           caption = 'Average Total Time from Application Submission to Commencing Operations <br><i>All licensees who have commenced operations.</i>',
+           color='darkblue')
+})
+```
+
+### Average Time from Application Submission to Provisional License
+```{r}
+
+renderValueBox ({
+  meanLT <- mean(leadTime_df()$A2Ptime, na.rm=TRUE)
+  valueBox(paste(trunc(meanLT), ' Days'),
+           caption = 'Average Time from Application Submission to Provisional License <br><i>All licensees who earned Provisional Licenses.</i>',
+           color='darkblue')
+})
+```
+
+### Average Time from Provisional License to Final License
+```{r}
+
+renderValueBox ({
+  meanLT <- mean(leadTime_df()$P2FnOtime, na.rm=TRUE)
+  valueBox(paste(trunc(meanLT),' Days'),
+           caption = 'Average Time from Provisional License to Final License <br><i>All licensees who earned Final Licenses.</i>',
+           color='darkblue')
+})
+```
+### Average Time from Final License to Commence Operations
+```{r}
+
+renderValueBox ({
+  meanLT <- mean(leadTime_df()$FnO2FOtime, na.rm=TRUE)
+  valueBox(paste(trunc(meanLT), ' Days'),
+           caption = 'Average Time from Final License to Commence Operations <br><i>All licensees who have commenced operations.</i>',
+           color='darkblue')
+})
+```
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Total Time - Application Start to Commence Operations
+```{r}
+renderPlot({
+leadTime_df() %>%
+    filter(!is.na(TotalTime))%>%
+    ggplot(aes(x=as.numeric(TotalTime), fill=factor(license_type), col=I('black'))) +
+    geom_histogram(bins=input$bins, aes(y=..density..)) +
+    geom_density(alpha=.3, fill="yellow")+
+    facet_grid(rows=vars(license_type))+
+    xlab("Days")+
+    theme(legend.position='none')
+})
+```
+
+### Priority vs. Non-Priority
+```{r}
+renderPlot({
+leadTime_df() %>%
+    filter(!is.na(TotalTime))%>%
+    ggplot(aes(x=as.numeric(TotalTime), fill=application_classification, col=I('black'))) +
+    geom_histogram(bins=input$bins,alpha=.5,position='identity',aes(y=..density..)) +
+    geom_density(alpha = .5)+
+    facet_grid(rows=vars(license_type))+
+    xlab("Days")
+})
+```
+
+### Top 10 Fastest
+
+```{r}
+renderDataTable({
+leadTime_df() %>% 
+  filter(!is.na(TotalTime)) %>%
+  arrange(TotalTime) %>% 
+  group_by(license_type) %>%
+  slice(1:10)
+})
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Application to Provisional License 
+
+```{r}
+renderPlot({
+leadTime_df() %>%
+    filter(!is.na(A2Ptime))%>%
+    ggplot(aes(x=as.numeric(A2Ptime), fill=factor(license_type), col=I('black'))) +
+    geom_histogram(bins=input$bins, aes(y=..density..)) +
+    geom_density(alpha=.3, fill="yellow")+
+    facet_grid(rows=vars(license_type))+
+    xlab("Days")+
+    theme(legend.position='none')
+})
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Provisional License to Final License
+```{r}
+renderPlot({
+leadTime_df() %>%
+    filter(!is.na(P2FnOtime))%>%
+    ggplot(aes(x=as.numeric(P2FnOtime),fill=factor(license_type), col=I('black'))) +
+    geom_histogram(bins=input$bins, aes(y=..density..)) +
+    geom_density(alpha=.3, fill="yellow")+
+    facet_grid(rows=vars(license_type))+
+    xlab("Days")+
+    theme(legend.position='none')
+    
+    
+})
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Final License to Commence Operations
+```{r}
+renderPlot({
+leadTime_df() %>%
+    filter(!is.na(FnO2FOtime))%>%
+    ggplot(aes(x=as.numeric(FnO2FOtime),fill=factor(license_type), col=I('black'))) +
+    geom_histogram(bins=input$bins, aes(y=..density..)) +
+    geom_density(alpha=.3, fill="yellow")+
+    facet_grid(rows=vars(license_type))+
+    xlab("Days")+
+    theme(legend.position='none')
+    
+})
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Data
+```{r}
+renderDataTable({
+  datatable(leadTime_df())
+})
+```
+License Renewal Trends {data-navmenu="Licensees"}
+========================================================
+Inputs {.sidebar data-width=300} 
+-----------------------------------------------------------------
+<h4>License Renewal Trends</h4>
+``` {r}
+hr()
+h5("Controls")
+h6("Filters")
+checkboxGroupInput(
+  "selectLicenseTypeLR",
+  label= "License Types:",
+  choices = unique(MELA_df$license_type),
+  selected = c('Marijuana Cultivator', 'Marijuana Retailer', 'Marijuana Product Manufacturer'),
+  inline = FALSE,
+  width = NULL,
+  choiceNames = NULL,
+  choiceValues = NULL
+)
+hr()
+sliderInput("binsLR",
+            "Number of bins:",
+            min = 1,
+            max = 30,
+            value = 15)
+hr()
+
+```
+Row
+----------------------------------------
+### 
+```{r}
+renderValueBox(valueBox("Final (Operating)",
+                        color="blue"))
+```
+
+### 
+```{r}
+renderValueBox(valueBox("Final (Not Operating)",
+                        color="lightblue"))
+```
+
+### 
+```{r}
+renderValueBox(valueBox("Provisional",
+                        color="darkgreen"))
+```
+
+
+Row
+----------------------------------------
+### Final Operating Active
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & commence_ind == TRUE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Unexpired',
+  color = 'blue'
+  )
+})
+```
+
+### Final Operating Inactive
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & commence_ind == TRUE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Expired',
+  color = 'blue'
+  )
+})
+```
+
+
+### Final Operating Delinquency Rate
+```{r}
+renderValueBox({
+  numA <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & commence_ind == TRUE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+  
+  numI <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & commence_ind == TRUE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+    summarize(n=n())
+  k <- 100* as.numeric(numI)/(as.numeric(numI)+as.numeric(numA))
+
+  valueBox (paste(round(k,0),' %'),
+  caption = 'Delinquency Rate',
+  color = 'blue'
+  )
+})
+```
+
+
+### Final Not Operating Active
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE)  %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Unexpired',
+  color = 'lightblue'
+  )
+})
+```
+
+### Final Not Operating Inactive
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Expired',
+  color = 'lightblue'
+  )
+})
+```
+
+### Final Not Operating Delinquency Rate
+```{r}
+renderValueBox({
+  numA <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+  
+  numI <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+    summarize(n=n())
+  k <- 100* as.numeric(numI)/(as.numeric(numI)+as.numeric(numA))
+
+  valueBox (paste(round(k,0),' %'),
+  caption = 'Delinquency Rate',
+  color = 'lightblue'
+  )
+})
+```
+
+### Provisional Active
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "PROVISIONAL LICENSE") %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Unexpired',
+  color = 'darkgreen'
+  )
+})
+```
+
+### Provisional Inactive
+```{r}
+renderValueBox({
+  num <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "PROVISIONAL LICENSE") %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")>lic_expiration_date) %>%
+    summarize(n=n())
+
+  valueBox (num,
+  caption = 'Expired',
+  color = 'darkgreen'
+  )
+})
+```
+
+### Provisional Delinquency Rate
+```{r}
+renderValueBox({
+  numA <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "PROVISIONAL LICENSE") %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>%
+    summarize(n=n())
+  
+  numI <- MELA_df %>% 
+    filter(license_type %in% input$selectLicenseTypeLR & approved_license_type == "PROVISIONAL LICENSE") %>%
+    filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>%
+    summarize(n=n())
+  k <- 100* as.numeric(numI)/(as.numeric(numI)+as.numeric(numA))
+
+  valueBox (paste(round(k,0),' %'),
+  caption = 'Delinquency Rate',
+  color = 'darkgreen'
+  )
+})
+```
+
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+
+### Aging of Delinquent Licenses
+```{r}
+renderPlot({
+MELA_Delinquent_df %>%
+    filter(license_type %in% input$selectLicenseTypeLR) %>%
+    ggplot(aes(x=license_delinquent_days, fill=factor(approved_license_type), col=I('black'))) +
+    geom_histogram(bins=input$binsLR, aes(y=..density..)) +
+    geom_density(alpha=.4, fill="yellow")+
+    facet_grid(rows=vars(approved_license_type))+
+    xlab("Days")+
+    theme(legend.position='none')
+})
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Delinquent Licenses
+``` {r}
+renderDataTable ({
+  MELA_Delinquent_df %>%
+    filter(license_type %in% input$selectLicenseTypeLR) %>%
+    select(license_type,license_number,approved_license_type,approved_license_stages,commence_operations_date,business_name,establishment_city,establishment_state,establishment_zipcode,application_approved_date, lic_fee_payment_submitted_date,lic_start_date,lic_expiration_date,cultivation_environment,cultivation_tier,license_delinquent_days)
+})
+```
+
+Sales and Prices {data-orientation=rows, data-navmenu="Demand"}
+======================================================
+Inputs {.sidebar data-width=300} 
+-----------------------------------------------------------------------
+<h4>Sales and Prices</h4>
+```{r}
+hr()
+selectUngrouped <- c ('Buds - Grams','Concentrate - Grams', 'Infused (edible) - Each', 'Infused Beverage - Each','Raw Pre-Rolls - Grams', 'Vape Product - Each')
+selectGroup1 <- c('Buds', 'Concentrate', 'Infused (edible)', 'Raw Pre-Rolls', 'Vape Product')
+selectGroup2 <- c('Buds', 'Concentrate', 'Infused (edible)', 'Raw Pre-Rolls', 'Vape Product')
+```
+The Cannabis Control Commission datasets include aggregated sales by product by day.  We provide ways to view historical sales and pricing either<ul><li> as reported  ('ungrouped');</li><li>  aggregated (eg: Buds (kilograms, grams, lbs) are aggregated to grams);</li> <li>or with certain outliers excluded (eg: plants, waste, etc.).</li></ul>
+```{r}
+hr()
+radioButtons("radioGroups", label = h5("Preset Groups"),
+    choices = list("Ungrouped" = 3, "Group 1: Aggregate Similars" = 1, "Group 2: Exclude Outliers" = 2), 
+    selected = 3)
+# actionButton("edit_groups","Edit Groups")
+# hr()
+# 
+# observeEvent(input$edit_groups, {
+#     dataEditServer("pGEdit",
+#                    data = productGroups())
+#   })
+
+h5("Plot Controls")
+
+selectInput('selectIncludeProducts',
+  label= h6("Filter by:"), 
+  choices = products,
+  selected = c("Buds - Grams", "Concentrate - Grams", "Infused (edible) - Each", "Infused Pre-Rolls - Grams", "Raw Pre-Rolls - Grams", "Vape Product - Each"),
+  multiple = TRUE)
+
+dateRangeInput("datesFilter", 
+               label = h6("Date range"),
+               start = as.Date("2019-01-01"),
+               end = as.Date(Sys.Date()))
+
+
+actionButton("reset_input", "Reset inputs")
+
+observeEvent(input$radioGroups, {
+  updateSelectInput(session, "selectIncludeProducts", 
+                    choices = unique(pGroups()%>% select(Groups)),
+                    selected = if (input$radioGroups == 1){
+                      selectGroup1} else 
+                        if(input$radioGroups == 2) {
+                          selectGroup2} else {selectUngrouped}
+                    )
+  }) 
+
+observeEvent(input$reset_input, {
+  
+  updateRadioButtons(session, 'radioGroups',
+                     selected = 3)
+
+})            
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+
+### Sales ($)
+
+```{r}
+df_filtered <- reactive({
+  pGroupsData() %>%
+    ungroup()%>%
+    filter(Merged_Name %in% input$selectIncludeProducts) %>%
+    mutate(ConsSales = ConsSales/1000)
+})
+
+renderPlotly({
+  req(input$selectIncludeProducts)
+   df_filtered() %>%
+     filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+      ggplot(aes(x=Period, y=ConsSales, color=Merged_Name))+
+      geom_line(alpha = .6, size = 1.4) +
+      geom_point(alpha = .8) +
+#      geom_smooth(method = "lm", formula = (y ~ poly(x,3)), se=FALSE) +
+     xlab("") + ylab("Sales ($000)") +
+     labs(col="Product/Group") +
+     scale_y_continuous(labels=comma) +
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+
+
+```
+
+
+### Sales (units)
+``` {r}
+renderPlotly({
+  req(input$selectIncludeProducts)
+   df_filtered() %>%
+     filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+      ggplot(aes(x=Period, y=ConsQty, color=Merged_Name))+
+      geom_line(alpha = .6, size = 1.4) +
+      geom_point(alpha = .8) +
+#      geom_smooth(method = "lm", formula = (y ~ poly(x,3)), se=FALSE) +
+     xlab("") + ylab("Sales (Units)") +
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+
+```
+
+### Year over Year Growth ($)
+
+```{r}
+renderPlotly({
+  req(input$selectIncludeProducts)
+   df_filtered() %>%
+     filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+      ggplot(aes(x=Period, y=YoYSales, color=Merged_Name))+
+      geom_line(alpha = .6, size = 1.4) +
+      geom_point(alpha = .8) +
+
+#      geom_smooth(method = "lm", formula = (y ~ poly(x,3)), se=FALSE) +
+     xlab("") + ylab("YoY Sales  Growth (%)") +
+     labs(col="Product/Group") +
+     ylim(-200,200) +
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month") +
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+
+```
+
+### Year over Year Growth (units)
+
+```{r}
+
+renderPlotly({
+  req(input$selectIncludeProducts)
+   df_filtered() %>%
+     filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+      ggplot(aes(x=Period, y=YoYQuantity, color=Merged_Name))+
+      geom_line(alpha = .6, size = 1.4) +
+      geom_point(alpha = .8) +
+#      geom_smooth(method = "lm", formula = (y ~ poly(x,3)), se=FALSE) +
+     xlab("") + ylab("YoY Units  Growth (%)") +
+     labs(col="Product/Group") +
+     ylim(-200,200) +
+     scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month") +
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+```
+
+### Data
+
+``` {r}
+
+DT::renderDataTable({
+  datatable(df_filtered(),  colnames=c("Product - UoM" = 2,"Month"=3, "Quantity" = 4, "Sales" = 5)) %>%
+    formatCurrency( c('Sales'), digits=0)%>%
+    formatRound('Quantity', digits=0, mark = ',')
+})
+
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+### Retail Price History
+```{r}
+ t_df <- reactive({
+   k<- if(input$useRollAvg){
+     as.numeric(input$radioRollAvg)}
+   else 
+    {1}
+   
+    df_filtered() %>%
+     ungroup() %>%
+     group_by(Merged_Name)%>%
+     # mutate(AvgPriceRA = zoo::rollmeanr(Avg_Price, k, fill=NA)) %>%
+     # mutate(PricePriorYearRA = zoo::rollmeanr(AvgPrice_Prior_Year, k, fill=NA))%>%
+     # mutate(YoYPriceRA = 100*(AvgPriceRA -PricePriorYearRA)/PricePriorYearRA) %>%
+     filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>% 
+     ungroup()
+  })
+
+renderPlotly({
+   req(input$selectIncludeProducts)
+  df_filtered() %>%
+    filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+    ggplot(aes(x=Period,y=Avg_Price, color = Merged_Name))+
+    geom_line(alpha = .6, size = 1.4) +
+    geom_point(alpha = .8) +
+#    geom_smooth(method=lm, formula=y ~ poly(x, 3, raw=TRUE), se=FALSE)+
+    ylab("Price per Unit $(US)") +
+    xlab("") +
+    labs(color="Product")+
+    scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+
+
+```
+
+### Year over Year Price Change
+```{r}
+renderPlotly({
+   req(input$selectIncludeProducts)
+  df_filtered() %>%
+    filter(input$datesFilter[1]<= Period & Period <= input$datesFilter[2]) %>%
+    ggplot(aes(x=Period,y=YoYPrice, color = Merged_Name))+
+    geom_line(alpha = .6, size = 1.4) +
+    geom_point(alpha = .8) +
+#    geom_smooth(method=lm, formula=y ~ poly(x, 3, raw=TRUE), se=FALSE)+
+    ylab("Change in YoY Price (%)") +
+    xlab("") +
+    labs(color="Product")+
+    scale_x_date(date_labels="%b-%Y",date_breaks  ="2 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))
+})
+```
+
+
+Column {data-width = 50}
+------------------------------------
+### Number of Groups {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- count(unique(pGroups() %>% select(Groups)))
+  valueBox(cqi)
+})
+```
+
+### Number Products Excluded {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- nrow(pGroups() %>% 
+                 filter(Groups == 'Exclude'))
+  valueBox(cqi)
+})
+```
+
+### Number Products Unassigned {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- nrow(pGroups() %>% 
+                 filter(is.na(Groups)))
+  valueBox(cqi)
+})
+```
+
+### Total Revenue of Grouped Products {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- pGroupsData() %>%
+    ungroup() %>%
+    filter (!(Merged_Name %in% c('Exclude'))) %>%
+    filter (!is.na(Merged_Name)) %>%
+    filter (year(Period) == year(Sys.Date())) %>%
+    summarize(sum(ConsSales), .groups = 'drop')
+  cqi <- formattable::currency(cqi/1000000,digits=2)
+  
+  valueBox(cqi, caption = "Sales YTD Included Products <br> ($Millions)")
+})
+```
+
+### Total Revenue of Excluded Products {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- pGroupsData() %>%
+    ungroup() %>%
+    filter (Merged_Name %in% c('Exclude')) %>%
+    filter (!is.na(Merged_Name)) %>%
+    filter (year(Period) == year(Sys.Date())) %>%
+    select(ConsSales) %>%
+    summarize(sum(ConsSales), .groups = 'drop')
+  cqi <- formattable::currency(cqi/1000000,digits=2)
+  
+  valueBox(cqi, caption = "Sales YTD Excluded Products <br> ($Millions)")
+})
+```
+
+### Total Revenue of Unassigned Products {data-width=75}
+``` {r}
+renderValueBox({
+  cqi <- pGroupsData() %>%
+    ungroup() %>%
+    filter (is.na(Merged_Name)) %>%
+    filter (year(Period) == year(Sys.Date())) %>%
+    select(ConsSales) %>%
+    summarize(sum(ConsSales), .groups = 'drop')
+  cqi <- formattable::currency(cqi/1000000,digits=2)
+  
+  valueBox(cqi, caption = "Sales YTD Unassigned Products <br> ($Millions)")
+})
+```
+
+Row {data-height = 150}
+--------------------------
+### Group Assignments
+
+``` {r}
+groupDataBuild <- function(monthly_df,prod_groups){
+  df <- left_join(monthly_df, prod_groups, by=c("Merged_Name" = "Product"))
+  df <- left_join(df,Conversion_Factors, by=c("UnitOfMeasureName" = "From_Units", "Conversion_Base" = "To_Units"))
+  df <- left_join(df, Recipes, by=c("ProductCategoryName", "UnitOfMeasureName"))
+  df$ConvQuantity <- (df$UnitOfMeasureName == df$Conversion_Base)*df$Quantity + max(df$To_Value,df$Grams_Flower_Req, na.rm=TRUE)*(!(df$UnitOfMeasureName == df$Conversion_Base)) *df$Quantity
+  return(df)
+}
+
+pGroups <- reactive({
+  if (input$radioGroups == 1){
+    productGroups() %>% select(Product,Groups=Group.1.Basic, Conversion_Base = Group.1.Units)
+    }
+  else if (input$radioGroups == 2) {
+    productGroups() %>% select(Product, Groups=Group.2.Exclusions, Conversion_Base = Group.2.Units)
+    }
+  else {
+    data.frame(
+      Product = products,
+      Groups = products,
+      Conversion_Base = NA)
+}})
+pGroupsData <- reactive ({
+  if (input$radioGroups == 3) {
+    t_month %>% 
+      select(Merged_Name, Period, ConsSales=Sales, ConsQty = Quantity, YoYPrice, YoYQuantity, YoYSales, Avg_Price, AvgPrice_Prior_Year)}
+  else {
+    groupDataBuild(t_month, pGroups()) %>% 
+    group_by(Groups, Period) %>% 
+    summarize(ConsQty = sum(Quantity, na.rm=TRUE), ConsSales = sum(Sales, na.rm=TRUE)) %>%
+      mutate(Avg_Price = ConsSales/ConsQty) %>%
+      ungroup() %>%
+      group_by(Groups) %>%
+      arrange(Period, by_group = TRUE) %>%
+      mutate(Sales_Prior_Year = lag(ConsSales, n = 12, order_by=Groups),
+             Quantity_Prior_Year = lag(ConsQty, n=12, order_by = Groups),
+             AvgPrice_Prior_Year = lag(Avg_Price, n=12, order_by = Groups))%>%
+      ungroup() %>%
+      mutate(YoYQuantity = 100*(ConsQty - Quantity_Prior_Year)/Quantity_Prior_Year) %>%
+      mutate(YoYSales = 100*(ConsSales - Sales_Prior_Year)/Sales_Prior_Year)%>%
+      mutate(YoYPrice = 100*(Avg_Price - AvgPrice_Prior_Year)/AvgPrice_Prior_Year) %>%
+      
+      select(Merged_Name = Groups, Period, ConsQty, ConsSales,YoYPrice, YoYQuantity, YoYSales, Avg_Price, AvgPrice_Prior_Year) %>%
+      ungroup()
+  }
+})
+
+DT::renderDataTable({
+  datatable(pGroups())
+  })
+```
+
+Supply
+=================================
+Inputs {.sidebar data-width=400} 
+-----------------------------------------------------------------------
+```{r}
+h4("Cannabis Supply")
+hr()
+p("Explore trends in the supply of raw cannabis in the Massachusetts market.")
+
+dateRangeInput (
+  "supplyDateRange",
+  "Filter for:",
+  start = as.Date("2018-11-01"),
+  end = max(plantActivity_df$ActivitySummaryDate),
+  min = NULL,
+  max = NULL,
+  format = "yyyy-mm-dd",
+  startview = "month",
+  weekstart = 0,
+  language = "en",
+  separator = " to ",
+  width = NULL,
+  autoclose = TRUE
+)
+hr()
+
+radioButtons (
+  "supplyPeriod",
+  label = "Summarize by:",
+  choices = c("Month"),
+  selected = "Month"
+)
+
+hr()
+h5("Indoor Grow - Estimating Factors")
+
+sliderInput("maxCanopyUtilizationIndoor",
+    "Estimated Canopy Utilization Indoor %",
+    min = 0,
+    max = 100,
+    value = 70)
+
+sliderInput(
+  "yieldIndoor",
+  "Dry Flower Yield - Indoor (lbs/plant):",
+  0,
+  5,
+  .25,
+  step = .05,
+  round = FALSE,
+  ticks = TRUE
+)
+sliderInput(
+  "spacePerPlantIndoor",
+  "Plant spacing (sq ft/plant)",
+  0,
+  10,
+  3,
+  step = .25,
+  round = FALSE,
+  ticks = TRUE
+)
+
+sliderInput(
+  "growsIndoor",
+  "Average Number of Grows - Indoor",
+  0,
+  6,
+  2.5,
+  step = .25,
+  round = FALSE,
+  ticks = TRUE
+)
+hr()
+h5("Outdoor Grow - Estimating Factors")
+
+sliderInput("maxCanopyUtilizationOutdoor",
+    "Estimated Canopy Utilization - Outdoor %",
+    min = 0,
+    max = 100,
+    value = 85)
+
+sliderInput(
+  "yieldOutdoor",
+  "Dry Flower Yield - Outdoor (lbs/plant):",
+  0,
+  5,
+  .5,
+  step = .05,
+  round = FALSE,
+  ticks = TRUE
+)
+sliderInput(
+  "spacePerPlantOutdoor",
+  "Plant spacing (sq ft/plant)",
+  0,
+  10,
+  5,
+  step = .25,
+  round = FALSE,
+  ticks = TRUE
+)
+sliderInput(
+  "growsOutdoor",
+  "Average Number of Grows - Outdoor",
+  0,
+  6,
+  1,
+  step=.25,
+  round = FALSE,
+  ticks = TRUE
+)
+
+h6("Outdoor Harvest Season")
+p("What fraction of total annual yield is available in each month.")
+v <- reactiveValues(data = { 
+        data.frame(Month = c('Jan','Feb','Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov','Dec'), 'Grow'=c(0,0,0,0,0,1,1,1,1,1,0,0), 'Harvest Factor' = c(0,0,0,0,0,0,.1,.25,.4,.25,0,0)) 
+    })
+
+output$my_datatable <- renderDT({
+        DT::datatable(v$data,
+                      options = list(pageLength = 12,
+                                     dom = 't'),
+                      caption = 'Source: operations | architects estimates',
+                      filter = 'none',
+                      editable = list(target = "cell", disable = list(columns = c(1)))
+
+)
+    })
+DTOutput("my_datatable",
+         width="98%")
+
+
+observeEvent(input$my_datatable_cell_edit, {
+        #get values
+        info = input$my_datatable_cell_edit
+        i = as.numeric(info$row)
+        j = as.numeric(info$col)
+        k = as.numeric(info$value)
+        if(k < 0){ #convert to positive if negative
+            k <- k * -1
+        }
+        
+        #write values to reactive
+        v$data[i,j] <- k
+    })
+
+hr()
+
+
+```
+
+Row 
+-------------------------------------------
+### 
+```{r}
+renderValueBox(valueBox("Indoor",
+                        color="#ADCBB0"))
+```
+
+### Indoor Licenses
+```{r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=n())
+  k <- d[d$cultivation_environment=='Indoor',2]
+  valueBox(k,
+           caption = "Number of Final Licenses Operating - Indoor",
+                        color="#ADCBB0")
+  })
+```
+
+### Indoor Canopy
+```{r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k <- as.numeric(d[d$cultivation_environment=='Indoor',2])
+  valueBox(scales::label_comma(accuracy = 1)(k),
+           caption = "Total Maximum Canopy Available - Indoor (sq.ft.)",
+                        color="#ADCBB0")
+  })
+```
+
+### Indoor - % of Total Max Canopy
+``` {r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k <- as.numeric(d[d$cultivation_environment=='Indoor',2])
+  k <- k/sum(d$n)
+  valueBox(paste(round(k*100,0),' %'),
+           caption = "Indoor Share of Total Maximum Canopy",
+                        color="#ADCBB0")
+  })
+```
+
+### Market Share - Indoor
+``` {r}
+renderValueBox ({
+  value <- yieldCanopyBasis_df() %>%
+    filter(Period >= (max(Period) %m-% months(12))) %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(totEffectiveCapacity))%>%
+    mutate(market_share = n/sum(n))
+  valueBox(paste(round(value$market_share[value$cultivation_environment == 'Indoor']*100,0), " %"),
+  caption = "Indoor Share of Cannabis Flower Produced (last 12 months)",
+  color='#ADCBB0')
+})
+
+```
+
+### Expected Yield Indoor
+``` {r}
+renderValueBox ({
+  value <- round((10000/input$spacePerPlantIndoor)*input$growsIndoor*input$yieldIndoor*(input$maxCanopyUtilizationIndoor/100), digits=0)
+  valueBox(value,
+  caption = "Expected Annual Yield Indoor per 10,000 sq. ft (lbs.)",
+  color='#ADCBB0')
+})
+```
+
+### Yield per Sq. Ft. Indoor
+``` {r}
+renderValueBox ({
+  value <- round((1/input$spacePerPlantIndoor)*input$growsIndoor*input$yieldIndoor*(input$maxCanopyUtilizationIndoor/100), digits=2)
+  valueBox(value,
+  caption = "Indoor Yield per Sq.Ft. (lbs.)",
+  color='#ADCBB0')
+})
+```
+
+Row
+------------------------------------------
+### 
+```{r}
+renderValueBox(valueBox("Outdoor",
+               color="darkorange"))
+```
+
+### Outdoor Licenses
+```{r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=n())
+  k <- as.numeric(d[d$cultivation_environment=='Outdoor',2])
+  valueBox(k,
+           caption = "Number of Final Licenses Operating - Outdoor",
+                        color="darkorange")
+  })
+```
+
+### Outdoor Canopy
+```{r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k <- as.numeric(d[d$cultivation_environment=='Outdoor',2])
+  valueBox(scales::label_comma(accuracy = 1)(k),
+           caption = "Total Maximum Canopy Available - Outdoor (sq.ft.)",
+                        color="darkorange")
+  })
+```
+
+### Outdoor - % of Total Max Canopy
+``` {r}
+renderValueBox({
+  d <- MCFinalOperating() %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(Canopy_Available))
+  k <- as.numeric(d[d$cultivation_environment=='Outdoor',2])
+  k <- k/sum(d$n)
+  valueBox(paste(round(k*100,0),' %'),
+           caption = "Outdoor Share of Total Maximum Canopy",
+                        color="darkorange")
+  })
+```
+
+
+### Market Share - Outdoor
+``` {r}
+renderValueBox ({
+  value <- yieldCanopyBasis_df() %>%
+    filter(Period >= (max(Period) %m-% months(12))) %>%
+    group_by(cultivation_environment) %>%
+    summarize(n=sum(totEffectiveCapacity))%>%
+    mutate(market_share = n/sum(n))
+  valueBox(paste(round(value$market_share[value$cultivation_environment == 'Outdoor']*100,0), " %"),
+  caption = "Outdoor Share of Cannabis Flower Produced (last 12 months)",
+  color='darkorange')
+})
+
+```
+
+### Expected Yield Outdoor
+``` {r}
+renderValueBox ({
+  value <- round((10000/input$spacePerPlantOutdoor)*input$growsOutdoor*input$yieldOutdoor*(input$maxCanopyUtilizationOutdoor/100), digits=0)
+  valueBox(value,
+  caption = "Expected Annual Yield Outdoor per 10,000 sq. ft (lbs.)",
+  color='darkorange')
+})
+```
+
+### Yield per Square Foot Outdoor
+``` {r}
+renderValueBox ({
+  value <- round((1/input$spacePerPlantOutdoor)*input$growsOutdoor*input$yieldOutdoor*(input$maxCanopyUtilizationOutdoor/100), digits=2)
+  valueBox(value,
+  caption = "Outdoor Yield per Sq.Ft. (lbs.)",
+  color='darkorange')
+})
+```
+
+Row {.tabset .tabset-fade}
+-------------------------------------------
+### Net Plants Harvested
+```{r}
+df_supply <- reactive ({
+  plantActivity_df %>% 
+    filter (input$supplyDateRange[1] <= ActivitySummaryDate & ActivitySummaryDate <= input$supplyDateRange[2]) %>%
+    group_by(Period=lubridate::floor_date(ActivitySummaryDate, tolower(input$supplyPeriod))) %>%
+    summarize(periodCount = sum(dailyPlantHarvestedCount))
+})
+
+df_Split <- reactive ({
+  MELA_df %>%
+  filter(license_type == "Marijuana Cultivator" & commence_ind) %>%
+  left_join(tiers, by="tier") %>%
+  group_by(cultivation_environment, Period=lubridate::floor_date(commence_operations_date, tolower(input$supplyPeriod))) %>%
+  summarize(spaceCultEnv = sum(Maximum_Canopy)) %>%
+  mutate(cumulativeSpaceByEnv = cumsum(spaceCultEnv)) %>%
+  ungroup() %>%
+    cast(Period ~ cultivation_environment, value='spaceCultEnv')
+})
+
+allDates <- reactive ({
+  seq.Date(
+  min(as.Date("2019-01-01")),
+  max(MSFS_df$SaleDateC),
+  by=tolower(input$supplyPeriod))
+})
+
+
+allDates_df <- reactive ({
+  outdoorHarvestMonths <- which(v$data[,2]!=0)
+
+ d <- left_join(
+  x=data.frame(Period = allDates()),
+  y=df_Split())
+
+  d$Indoor[is.na(d$Indoor)] <- 0
+  d$Outdoor[is.na(d$Outdoor)] <- 0
+  d %>%
+  mutate(cumIndoorSpace = cumsum(Indoor)) %>%
+  mutate(cumOutdoorSpace = cumsum(Outdoor)) %>%
+  mutate(percentIndoor = cumIndoorSpace/(cumIndoorSpace + cumOutdoorSpace))%>%
+  mutate(percentOutdoor= cumOutdoorSpace/(cumIndoorSpace + cumOutdoorSpace)) %>%
+    mutate(outdoorInd = month(Period) %in% outdoorHarvestMonths) %>%
+    mutate(percentIndoor = (1-outdoorInd) + percentIndoor*outdoorInd) %>%
+    mutate(percentOutdoor = percentOutdoor*outdoorInd)
+    
+})  
+
+renderPlotly ({
+  df_supply() %>% 
+    ggplot(aes(x=Period, y= periodCount)) +
+    geom_bar(stat="identity", fill = "darkgreen") +
+    geom_smooth(se=FALSE) +
+    xlab("") +
+    ylab("Number of Plants Harvested") +
+    scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))+
+    scale_y_continuous(label=comma)
+})
+
+```
+
+### Estimated Cannabis Flower Yield (based on Plants Harvested)
+
+```{r}
+df_supply_merged <- reactive ({
+  df_supply() %>% 
+    left_join(allDates_df(), by="Period") %>%
+    mutate(totalYield = periodCount * (input$yieldIndoor * percentIndoor + input$yieldOutdoor * percentOutdoor))
+})
+
+renderPlotly ({
+  
+  df_supply_merged() %>% 
+    ggplot(aes(x=Period, y= totalYield)) +
+    geom_bar(stat="identity", fill="darkgreen") +
+    geom_smooth(se=FALSE) +
+    xlab("") +
+    ylab("Cannabis Flower Yield (lbs.)") +
+    scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1))+
+    scale_y_continuous(label=comma)
+})
+```
+
+### Data - Yield by Period
+```{r}
+renderDataTable ({
+  df_supply_merged() %>%
+    select(Period, periodCount, percentIndoor, percentOutdoor, totalYield) %>%
+  datatable(
+            colnames=c("Period" = "Period","Plants Harvested" = "periodCount","Percent Indoor" = "percentIndoor", "Percent Outdoor" = "percentOutdoor", "Yield (lbs.)" = "totalYield")) %>%
+    formatPercentage(columns=c("Percent Indoor", "Percent Outdoor")) %>%
+    formatRound("Yield (lbs.)", digits = 0)
+    
+})
+```
+
+Row {.tabset .tabset-fade}
+----------------------------------
+### Licensed Maximum Canopy
+``` {r}
+MCFinalOperating <- reactive ({
+  MELA_df %>% 
+  filter(license_type == 'Marijuana Cultivator' & commence_ind) %>%
+  left_join(tiers, by='tier', keep=FALSE) %>% 
+   mutate(Canopy_Available = Maximum_Canopy) %>% 
+  left_join(yields, by=c("cultivation_environment" = 'Cultivation_Environment')) %>% 
+    ungroup()
+})
+
+Capacity_df <- reactive ({
+  df <- MCFinalOperating() %>% 
+  group_by(cultivation_environment, Period = lubridate::floor_date(commence_operations_date, tolower(input$supplyPeriod))) %>%
+    summarize(inc_canopy = sum(Canopy_Available)) %>% 
+    ungroup() %>%
+    complete(Period = seq.Date(as.Date("2018-11-01"), as.Date(ccc_ThisPeriod, format="%Y%m%d"), by=tolower(input$supplyPeriod)), cultivation_environment)
+  df$inc_canopy[is.na(df$inc_canopy)] <- 0 
+  df$cultivation_environment <- factor(df$cultivation_environment)  
+  df %>%  group_by(cultivation_environment) %>%
+    mutate(total_canopy = cumsum(inc_canopy))
+}) 
+
+renderPlotly(
+Capacity_df() %>% ggplot(aes(x=Period, y=total_canopy, fill=cultivation_environment))+
+geom_bar(stat='identity', color='black', size=.25) +
+  ylab("Total Maximum Canopy (sq.ft.)")+
+  xlab("") +
+  scale_fill_manual(values=c("#ADCBB0","darkorange"))+
+  scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none')
+) 
+```
+
+### Effective Maximum Canopy Available
+
+``` {r}
+renderPlotly({
+  outdoorHarvestMonths <- which(v$data[,2]!=0)
+  
+  df <- Capacity_df() %>%
+    mutate(outdoorInd = ((cultivation_environment == "Indoor") * 1)+((cultivation_environment == "Outdoor") * (month(Period) %in% outdoorHarvestMonths))) %>%
+    mutate(totEffectiveCanopy = total_canopy * outdoorInd)
+  
+  df %>% ggplot(aes(x=Period, y=totEffectiveCanopy, fill=cultivation_environment))+
+    geom_bar(stat='identity', color='black', size=.25) +
+  ylab("Total Maximum Canopy (sq.ft.)")+
+  xlab("") +
+  scale_fill_manual(values=c("#ADCBB0","darkorange"))+
+  scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none')
+}) 
+```
+
+### Estimated Plants Harvested
+
+``` {r}
+renderPlotly ({
+outdoorHarvestFactors <- v$data[,3]
+  
+  periodFactor <- reactive ({
+    case_when(
+    input$supplyPeriod == 'Year' ~ 1,
+    input$supplyPeriod == 'Quarter' ~ 4,
+    input$supplyPeriod == 'Month' ~ 12,
+    input$supplyPeriod == 'Week' ~ 52,
+    input$supplyPeriod == 'Day' ~ 365
+  )
+  })
+  
+  df <- Capacity_df() %>%
+    mutate(totPlantsHarvested = ((cultivation_environment == "Indoor") *((10000/input$spacePerPlantIndoor) * input$growsIndoor*(input$maxCanopyUtilizationIndoor/100)*(total_canopy/10000)* 1/periodFactor()))+((cultivation_environment == "Outdoor") * ((10000/input$spacePerPlantOutdoor)* input$growsOutdoor*(input$maxCanopyUtilizationOutdoor/100)*(total_canopy/10000)*(outdoorHarvestFactors[month(Period)])))) 
+    
+df %>% 
+  ggplot(aes(x=Period, y=totPlantsHarvested, fill=cultivation_environment))+
+  geom_bar(stat='identity', color='black', size=.25) +
+  ylab("Number of Plants Harvested")+
+  xlab("") +
+  scale_fill_manual(values=c("#ADCBB0","darkorange"))+
+  scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none')+
+  scale_y_continuous(label=comma)
+ } )
+```
+
+### Estimated Cannabis Flower Yield
+
+```{r}
+yieldCanopyBasis_df <- reactive ({
+  outdoorHarvestFactors <- v$data[,3]
+  
+  periodFactor <- reactive ({
+    case_when(
+    input$supplyPeriod == 'Year' ~ 1,
+    input$supplyPeriod == 'Quarter' ~ 4,
+    input$supplyPeriod == 'Month' ~ 12,
+    input$supplyPeriod == 'Week' ~ 52,
+    input$supplyPeriod == 'Day' ~ 365
+  )
+  })
+  
+Capacity_df() %>%
+    mutate(totEffectiveCapacity = ((cultivation_environment == "Indoor") *(input$yieldIndoor*(10000/input$spacePerPlantIndoor) * input$growsIndoor*(input$maxCanopyUtilizationIndoor/100)*(total_canopy/10000)* 1/periodFactor()))+((cultivation_environment == "Outdoor") * (input$yieldOutdoor*(10000/input$spacePerPlantOutdoor)* input$growsOutdoor*(input$maxCanopyUtilizationOutdoor/100)*(total_canopy/10000)*(outdoorHarvestFactors[month(Period)])))) 
+})
+
+renderPlotly ({
+  
+yieldCanopyBasis_df() %>% 
+  ggplot(aes(x=Period, y=totEffectiveCapacity, fill=cultivation_environment))+
+  geom_bar(stat='identity', color='black', size=.25) +
+  ylab("Cannabis Flower Yield (lbs)")+
+  xlab("") +
+  scale_fill_manual(values=c("#ADCBB0","darkorange"))+
+  scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none')+
+  scale_y_continuous(label=comma)
+ } )
+```
+
+### Data
+``` {r}
+DT::renderDataTable(datatable(yieldCanopyBasis_df()))
+```
+
+Row {.tabset .tabset-fade}
+--------------------------------
+### Plant Inventory
+
+```{r}
+plantActivity_filtered <- reactive ({
+  df <- plantActivity_df %>% 
+    ungroup() %>%
+      select(ActivitySummaryDate,PlantFloweringCount, PlantVegetativeCount,PlantImmatureCount) %>%
+      group_by (Period = lubridate::floor_date(ActivitySummaryDate, tolower(input$supplyPeriod))) %>%
+      summarize(AvgPeriodPlantFloweringCount = mean(PlantFloweringCount), AvgPeriodPlantVegetativeCount = mean(PlantVegetativeCount), AvgPeriodPlantImmatureCount = mean(PlantImmatureCount)) %>% 
+    pivot_longer(c(AvgPeriodPlantFloweringCount, AvgPeriodPlantVegetativeCount, AvgPeriodPlantImmatureCount), names_to = "key", values_to = "value") %>%
+    ungroup()
+  
+  df$key<-factor(df$key, levels= c("AvgPeriodPlantFloweringCount","AvgPeriodPlantVegetativeCount","AvgPeriodPlantImmatureCount"))
+  df
+}) 
+  renderPlotly ({
+    
+  plantActivity_filtered() %>%
+    ggplot( aes(x=Period, y=value, fill=key)) +
+    geom_bar(stat='identity',position = position_dodge(), alpha = 0.95) +
+    scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1)) +
+    xlab("") +
+    ylab("Number of Plants")+
+    labs(fill = "")+
+    scale_fill_discrete(labels=c('Flowering', 'Vegetative', 'Immature')) +
+      scale_fill_manual(values=c("tan","darkgreen","red"))+
+      scale_y_continuous(label=comma)+
+      scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+
+     theme(axis.text.x=element_text(angle=60, hjust=1), legend.position = 'none')
+    
+})
+```
+
+### Data
+```{r}
+renderDataTable (pivot_wider(plantActivity_filtered(), names_from=key, values_from=value))
+```
+
+<!-- Forecast {data-orientation=columns} -->
+<!-- ====================================================================== -->
+<!-- Inputs {.sidebar data-width=300}  -->
+<!-- ----------------------------------------------------------------------- -->
+
+<!-- ``` {r} -->
+<!-- h4("Forecasts") -->
+<!-- hr() -->
+<!-- ``` -->
+<!-- Our forecasts for cannabis supply, demand and prices use state-of-the-art machine learning models.  While we are not  publishing our forecasting models at this time, we do publish snapshots of our forecasts on a monthly basis along with commentary and analysis. -->
+
+<!-- <h5>Supply/Demand Balance</h5> -->
+<!-- Cannabis is an agricultural commodity, and like most such commodities, prices are a direct reflection of underlying supply and demand in the marketplace.  We forecast expected supply, expected demand, and prices based on supply/demand balances and other factors.   -->
+
+<!-- <h6><b>March 2023 Commentary</b></h6> -->
+<!-- The graph at right highlights our forecast of aggregate supply for cannabis flower and our forecast of aggregate demand for cannabis flower based on the February 17, 2023 data files of the Cannabis Control Commission. We continue to see supply outstripping demand over the next 24 months. Current cultivator licensees who are operating, together with cultivator licensees who hold final licenses but have not yet begun operating, together can supply the entire market demand for cannabis in Massachusetts for the next 24 months.  Holders of provisional cultivation licenses need to pace their startup plans accordingly. -->
+
+<!-- <h5>Price Forecast</h5> -->
+<!-- We forecast the price for an ounce of cannabis bud using our projections of differential estimates of supply and demand, license activity, historical prices and other variables.  -->
+
+<!-- <h6><b>March 2023 Commentary</b></h6> -->
+<!-- We expect prices to continue to soften throughout the next 12 months, with a target range in the $140 - $160 per ounce of cannabis bud.  Depending on how much incremental grow capacity becomes available from Provisional license holders over the next 12 months, we may see a slight upturn in prices in mid-2024.   -->
+
+<!-- Row {data-height = 50} -->
+<!-- ---------------------------------- -->
+<!-- ### Supply/Demand Balance -->
+
+<!-- ```{r} -->
+<!-- load (file = paste(path_to_forecastFile,"/savedDemandForecast.Rdata",sep="")) -->
+<!-- load (file = paste(path_to_forecastFile,"/savedsupply_df.Rdata",sep="")) -->
+<!-- load (file = paste(path_to_forecastFile,"/savedCapacity_df2.Rdata",sep="")) -->
+<!-- load (file = paste(path_to_forecastFile,"/savedfit.Rdata",sep="")) -->
+<!-- load (file = paste(path_to_forecastFile,"/savedmodelName.Rdata",sep="")) -->
+<!-- load (file = paste(path_to_forecastFile,"/savedValues.Rdata",sep="")) -->
+
+<!--  renderPlotly ({ -->
+<!--    augment(fit_df) %>% -->
+<!--     filter(.model == modelName) %>% -->
+<!--         ggplot(aes(x=Period))+ -->
+<!--         geom_line(aes(y=tot_flower_demand), color='black', size=1.5) + -->
+<!--         geom_line(data=fc_s, aes(y=.mean *(1+(as.numeric(modelVals[1])/100 + as.numeric(modelVals[2])/100 + as.numeric(modelVals[3])/100))), color='green', size=1.5) + -->
+<!--         geom_bar(data=C_df, -->
+<!--                 aes(y=total_capacity), -->
+<!--              stat='identity', -->
+<!--              fill='blue', -->
+<!--             alpha=.4, -->
+<!--             position='stack') + -->
+<!--      geom_bar(data=su_df, -->
+<!--              aes(y=cumYield, fill=(approved_license_type)), -->
+<!--            stat='identity', -->
+<!--             position='stack') + -->
+<!--     xlab("") + -->
+<!--   ylab("Total Cannabis Flower (lbs.)") + -->
+<!--   theme(legend.position ="none") + -->
+<!--     scale_colour_brewer(palette = "PuBu")+ -->
+<!--      annotate(geom='text', x=as.Date("2022-06-01"), y=70000, color='blue',size=5, label='Projected Flower Supply')+ -->
+<!--      annotate(geom='text', x=as.Date("2024-03-01"), y=30000, color='green', size=5, label='Projected Net Flower Demand') -->
+
+
+<!--  }) -->
+<!-- ``` -->
+
+<!-- ### 12 Month Price Forecast for Ounce Cannabis Bud -->
+<!-- ```{r} -->
+<!-- temp2 <- augment(fit_df) %>% -->
+<!--   filter(.model == modelName) %>% -->
+<!--   select(Period, Demand=tot_flower_demand) -->
+
+<!-- temp3 <- C_df %>%  -->
+<!--   group_by(Period) %>% -->
+<!--   summarize(tot_inc_capacity = sum(inc_capacity), tot_inc_canopy = sum(inc_canopy)) %>% -->
+<!--   mutate(tot_cum_capacity = cumsum(tot_inc_capacity), tot_cum_canopy = cumsum(tot_inc_canopy)) -->
+
+<!-- temp4 <- left_join(temp3,temp2) -->
+
+<!-- temp4 <- left_join(temp4, MPPO_month_df, by=c("Period" = "month")) %>% -->
+<!--   mutate(capacity_differential = tot_cum_capacity - Demand) %>% -->
+<!--   mutate(avg_price.1 = lag(avg_price)) %>% -->
+<!--   mutate(sqrt_Demand = sqrt(Demand)) %>% -->
+<!--   mutate(sqrt_cdiff = sqrt(capacity_differential)) -->
+<!-- temp4 <- temp4[-c(1:2),] -->
+<!-- temp4 <- temp4[c(1:49),] -->
+<!-- temp4 <- tail(temp4,24) -->
+
+<!-- # Independent Variable: Number of Dispensaries -->
+<!-- dispOperating <- MELA_Approved_df %>%  -->
+<!--   filter(license_type == 'Marijuana Retailer' & commence_ind) %>% -->
+<!--   group_by(Period = lubridate::floor_date(commence_operations_date, "month")) %>%  -->
+<!--   summarize(incDispensaries = n()) %>% -->
+<!--   ungroup() %>% -->
+<!--   complete(Period = seq.Date(min(temp4$Period), max(temp4$Period), by="month"), fill=list(incDispensaries = 0))%>% -->
+<!--   mutate(totDispensaries = cumsum(incDispensaries)) -->
+<!-- temp4 <- left_join(temp4, dispOperating) -->
+
+<!-- # price.lm  <- lm(avg_price ~ Demand + capacity_differential, data=temp5) -->
+<!-- price.lm  <- lm(avg_price ~ sqrt_Demand +sqrt_cdiff, data=temp4) -->
+<!-- price.lm.fit <- predict(price.lm) -->
+
+<!-- # construct a dataframe of independent variables to forecast -->
+<!-- fl <- su_df %>% filter(approved_license_type %in% c("FINAL LICENSE","FINAL LICENSE COMMENCED OPERATIONS")) %>% -->
+<!--   group_by(Period) %>% -->
+<!--   summarize (tot_cum_capacity=sum(cumYield)) %>% -->
+<!--   left_join(fc_s) %>%  -->
+<!--   select(Period,tot_cum_capacity,Demand=.mean) %>%  -->
+<!--   mutate(capacity_differential = tot_cum_capacity - Demand)%>% -->
+<!--   mutate(sqrt_Demand = sqrt(Demand)) %>% -->
+<!--   mutate(sqrt_cdiff = sqrt(capacity_differential)) -->
+<!-- fl.predict <- predict(price.lm, newdata=fl) -->
+
+<!-- fl.enhanced <- fl %>% mutate(fcast = fl.predict) -->
+<!-- fl.enhanced$fcast <- lead(fl.enhanced$fcast,4) -->
+<!-- fl.enhanced <- head(fl.enhanced, 12) -->
+<!-- renderPlotly({ -->
+<!-- fl.enhanced %>% ggplot(aes(x=Period, y=fcast)) + -->
+<!--   geom_point() + -->
+<!--     geom_smooth() + -->
+<!--      xlab("")+ -->
+<!--   ylab("$") + -->
+<!--     scale_x_date(date_labels="%b-%Y",date_breaks  ="1 month")+ -->
+<!--      theme(axis.text.x=element_text(angle=60, hjust=1)) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- Demand Forecasting {data-navmenu="Futurecasting"} -->
+<!-- ================================================= -->
+<!-- Inputs {.sidebar}  -->
+<!-- ----------------------------------------------------------------------- -->
+<!-- ``` {r} -->
+<!-- h4(" Demand Forecasting Controls") -->
+<!-- hr() -->
+
+
+<!-- radioButtons("dataGranularity",  -->
+<!--              label = "Granularity:", -->
+<!--              choices = c("Daily", "Weekly", "Monthly","Yearly"), -->
+<!--              selected = "Monthly" -->
+<!-- ) -->
+<!-- radioButtons("fixIncompletePeriod", -->
+<!--                label= "How to handle final period for incomplete days:", -->
+<!--                choices = c("Do nothing","Scale final period","Drop final period"), -->
+<!--                selected = "Scale final period") -->
+
+<!-- conditionalPanel( -->
+<!--   condition = "input.dataGranularity == 'Monthly'", -->
+<!--   sliderInput("forecastPeriods",  -->
+<!--             label = h6("Number of Periods to forecast (months): "), -->
+<!--             min = 0, max = 120, value = 24) -->
+<!-- ) -->
+<!-- conditionalPanel( -->
+<!--   condition = "input.dataGranularity == 'Daily' ", -->
+<!--   sliderInput("forecastPeriods",  -->
+<!--             label = h6("Number of Periods to forecast (days): "), -->
+<!--             min = 0, max = 3650, value = 720) -->
+<!-- ) -->
+<!-- conditionalPanel( -->
+<!--   condition = "input.dataGranularity == 'Weekly' ", -->
+<!--   sliderInput("forecastPeriods",  -->
+<!--             label = h6("Number of Periods to forecast (weeks): "), -->
+<!--             min = 0, max = 520, value = 104) -->
+<!-- ) -->
+<!-- conditionalPanel( -->
+<!--   condition = "input.dataGranularity == 'Yearly' ", -->
+<!--   sliderInput("forecastPeriods",  -->
+<!--             label = h6("Number of Periods to forecast (years): "), -->
+<!--             min = 0, max = 5, value = 2) -->
+<!-- ) -->
+
+<!-- dateRangeInput("forecastUseDates",  -->
+<!--                label = "Include these dates in history:", -->
+<!--                start = min(t_day$Period), -->
+<!--                end = max(t_day$Period) -->
+<!--                ) -->
+<!-- airDatepickerInput("chooseKnots1", -->
+<!--   label = "Identity periods to exclude ('knots'):", -->
+<!--   value = NULL, -->
+<!--   multiple = TRUE, -->
+<!--   range = TRUE, -->
+<!--   timepicker = FALSE, -->
+<!--   separator = " - ", -->
+<!--   placeholder = NULL, -->
+<!--   dateFormat = "yyyy-MM-dd", -->
+<!--   firstDay = NULL, -->
+<!--   minDate = min(t_day$Period), -->
+<!--   maxDate = max(t_day$Period), -->
+<!--   disabledDates = NULL, -->
+<!--   highlightedDates = NULL, -->
+<!--   view = c("days", "months", "years"), -->
+<!--   startView = NULL, -->
+<!--   minView = c("days", "months", "years"), -->
+<!--   monthsField = c("monthsShort", "months"), -->
+<!--   clearButton = TRUE, -->
+<!--   todayButton = TRUE, -->
+<!--   autoClose = FALSE, -->
+<!--   timepickerOpts = timepickerOptions(), -->
+<!--   position = NULL, -->
+<!--   update_on = c("change", "close"), -->
+<!--   addon = c("right", "left", "none"), -->
+<!--   language = "en", -->
+<!--   inline = FALSE, -->
+<!--   onlyTimepicker = FALSE, -->
+<!--   width = NULL, -->
+<!--   toggleSelected = TRUE -->
+<!-- ) -->
+<!-- airDatepickerInput("chooseKnots2", -->
+<!--   label = NULL, -->
+<!--   value = NULL, -->
+<!--   multiple = TRUE, -->
+<!--   range = TRUE, -->
+<!--   timepicker = FALSE, -->
+<!--   separator = " - ", -->
+<!--   placeholder = NULL, -->
+<!--   dateFormat = "yyyy-MM-dd", -->
+<!--   firstDay = NULL, -->
+<!--   minDate = min(t_day$Period), -->
+<!--   maxDate = max(t_day$Period), -->
+<!--   disabledDates = NULL, -->
+<!--   highlightedDates = NULL, -->
+<!--   view = c("days", "months", "years"), -->
+<!--   startView = NULL, -->
+<!--   minView = c("days", "months", "years"), -->
+<!--   monthsField = c("monthsShort", "months"), -->
+<!--   clearButton = TRUE, -->
+<!--   todayButton = TRUE, -->
+<!--   autoClose = FALSE, -->
+<!--   timepickerOpts = timepickerOptions(), -->
+<!--   position = NULL, -->
+<!--   update_on = c("change", "close"), -->
+<!--   addon = c("right", "left", "none"), -->
+<!--   language = "en", -->
+<!--   inline = FALSE, -->
+<!--   onlyTimepicker = FALSE, -->
+<!--   width = NULL, -->
+<!--   toggleSelected = TRUE -->
+<!-- ) -->
+<!-- hr() -->
+<!-- checkboxGroupButtons ("checkboxDemandForecast", -->
+<!--                       label = "Forecast Approach:", -->
+<!--                       choices = c("Aggregate then Forecast Net Reqs","Forecast Units then Aggregate to Net Reqs"), -->
+<!--                       selected = c("Aggregate then Forecast Net Reqs")) -->
+
+<!-- hr() -->
+<!-- radioGroupButtons ("showConfInt2", -->
+<!--               label = "Show confidence interval?", -->
+<!--               choices = c("None", "95", "90", "85", "80"), -->
+<!--               selected = "None", -->
+<!--               direction = 'vertical') -->
+
+<!-- # This function aggregates cannabis flower demand and converts grams to pounds -->
+<!--  aggCannabisFlowerDemand <- function (df){ -->
+
+<!--    # conversion factor for grams to pounds -->
+<!-- cf<- as.numeric(Conversion_Factors %>% filter(From_Units=='Pounds', To_Units=='Grams') %>% select(To_Value)) -->
+
+<!--   newdf <- df %>% -->
+<!--     left_join(Recipes,by=c('ProductCategoryName'='ProductCategoryName','UnitOfMeasureName' = 'UnitOfMeasureName')) %>% -->
+<!--     mutate(Cannabis_libraryments = Quantity * Grams_Flower_Req) %>% -->
+<!--     group_by(ProductCategoryName, Period) %>% -->
+<!--   summarize( -->
+<!--     period_demand_flower = sum(Cannabis_Requirements, na.rm=TRUE)) -->
+
+<!--   # convert grams to pounds -->
+<!--   newdf$period_demand_flower <- newdf$period_demand_flower/cf -->
+
+<!--   return(newdf) -->
+<!--  }  -->
+
+<!--  t_period <- reactive ({ -->
+<!--    t <- if (input$dataGranularity == "Daily") { -->
+<!--      t_day}  -->
+<!--    else if (input$dataGranularity == "Monthly") { -->
+<!--      t_month} -->
+<!--    else if (input$dataGranularity == "Weekly") { -->
+<!--      t_week} -->
+<!--    else {t_year} -->
+<!--    return(t) -->
+<!--  }) -->
+
+
+<!-- demand <- reactive({ -->
+<!--   t_period() %>%  -->
+<!--     filter(input$forecastUseDates[1]<= Period & Period <= input$forecastUseDates[2]) %>% -->
+<!--   aggCannabisFlowerDemand() -->
+<!-- }) -->
+
+<!-- aggDemand <- reactive ({ -->
+<!--   d <- demand() %>% group_by(Period) %>% summarize(tot_flower_demand = sum(period_demand_flower)) -->
+
+<!--   # now handle the final period to account for partial number of days -->
+
+<!--   if (input$fixIncompletePeriod == "Scale final period") { -->
+<!--     scale_factor <- case_when( -->
+<!--     input$dataGranularity == "Monthly" ~ days_in_month(as.Date(ccc_ThisPeriod,format="%Y%m%d"))/mday(as.Date(ccc_ThisPeriod,format="%Y%m%d")), -->
+<!--     input$dataGranularity == "Weekly" ~ 7/wday(as.Date(ccc_ThisPeriod,format="%Y%m%d")), -->
+<!--     input$dataGranularity == "Yearly" ~ 365/yday(as.Date(ccc_ThisPeriod,format="%Y%m%d")), -->
+<!--     TRUE ~ 1 -->
+<!--   ) -->
+
+<!--   d$tot_flower_demand[length(d$tot_flower_demand)] = d$tot_flower_demand[length(d$tot_flower_demand)]*scale_factor -->
+<!--   } -->
+<!--   if (input$fixIncompletePeriod == "Drop final period"){ -->
+<!--     d <- head(d, -1) -->
+<!--   } -->
+
+<!--   return(d) -->
+<!-- }) -->
+
+
+
+<!-- ``` -->
+
+<!-- Row {.tabset .tabset-fade}  -->
+<!-- ----------------------------------------------- -->
+<!-- ### Aggregate Cannabis Flower Requirements -->
+<!-- ```{r} -->
+
+<!-- renderPlotly ({ -->
+<!--   demand() %>% -->
+<!--   ggplot() + -->
+<!--   geom_bar(aes (x=Period, y=period_demand_flower, fill=ProductCategoryName), stat = 'identity')+ -->
+<!--   geom_smooth(data=aggDemand(), aes(x=Period, y=tot_flower_demand))+ -->
+<!--   xlab("")+ -->
+<!--   ylab("Demand Cannabis Flower (lbs.)")+ -->
+<!--   labs(fill="Product")+ -->
+<!--   scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+ -->
+<!--      theme(axis.text.x=element_text(angle=60, hjust=1))  -->
+<!-- }) -->
+
+
+<!-- ``` -->
+
+<!-- ### Data - t_period -->
+
+<!-- ```{r} -->
+<!-- renderDataTable({ -->
+<!--   datatable(t_period()) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Data - Demand -->
+
+<!-- ```{r} -->
+<!-- renderDataTable({ -->
+<!--   datatable(demand()) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- <!-- Row {.tabset .tabset-fade} --> -->
+<!-- <!-- ---------------------------------- --> -->
+<!-- <!-- ### Seasonal Plot --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderPlot ({ --> -->
+<!-- <!--   aggDemand_tsibble() %>%  --> -->
+<!-- <!--     gg_season(size=2)+ --> -->
+<!-- <!--     ylab("Cannabis Flower (lbs.)") --> -->
+<!-- <!-- }) --> -->
+
+<!-- <!-- ``` --> -->
+<!-- <!-- ### Subseries Plots --> -->
+
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderPlot ({ --> -->
+<!-- <!--   aggDemand_tsibble() %>%  --> -->
+<!-- <!--     gg_subseries(size=2)+ --> -->
+<!-- <!--     ylab("Cannabis Flower (lbs.)") --> -->
+<!-- <!-- }) --> -->
+
+<!-- <!-- ``` --> -->
+<!-- <!-- ### Autocorrelation --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderPlot({ --> -->
+<!-- <!--   aggDemand_tsibble() %>% --> -->
+<!-- <!--     ACF(tot_flower_demand, --> -->
+<!-- <!--         lag_max = case_when( --> -->
+<!-- <!--           input$dataGranularity == "Daily" ~ 720, --> -->
+<!-- <!--           input$dataGranularity == "Weekly" ~ 112, --> -->
+<!-- <!--           input$dataGranularity == "Monthly" ~24, --> -->
+<!-- <!--           input$dataGranularity == "Yearly" ~ 2 --> -->
+<!-- <!--         )) %>% --> -->
+<!-- <!--     autoplot() --> -->
+
+<!-- <!-- }) --> -->
+<!-- <!-- ``` --> -->
+
+<!-- <!-- ### Lag Plot --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderPlotly({ --> -->
+<!-- <!--   aggDemand_tsibble() %>% --> -->
+<!-- <!--     gg_lag(tot_flower_demand, geom = "point") + --> -->
+<!-- <!--   labs(x = "lag(tot_flower_demand, k)") --> -->
+<!-- <!-- }) --> -->
+<!-- <!-- ``` --> -->
+
+<!-- <!-- ### Decomposition - STL --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderPlot({ --> -->
+<!-- <!--   dcmp<- aggDemand_tsibble() %>% --> -->
+<!-- <!--   model(stl = STL(tot_flower_demand)) --> -->
+
+<!-- <!-- components(dcmp) %>% autoplot() --> -->
+<!-- <!-- }) --> -->
+<!-- <!-- ``` --> -->
+
+<!-- <!-- ### Data - aggDemand() --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- renderDataTable({ --> -->
+<!-- <!--   datatable(aggDemand()) --> -->
+<!-- <!-- }) --> -->
+<!-- <!-- ``` --> -->
+<!-- Row {.tabset .tabset-fade}  -->
+<!-- ---------------------------------- -->
+<!-- ### Basic Models - Fit -->
+<!-- ```{r} -->
+<!-- renderPlotly ({ -->
+<!--   augment(fit()) %>% -->
+<!--     ggplot(aes(x=Period)) + -->
+<!--     geom_line(aes(y=tot_flower_demand), color='black', size=2) + -->
+<!--     geom_line(aes(y=.fitted, group=.model, color=.model), size=1.2, alpha=.7) + -->
+<!--     xlab("") + -->
+<!--     ylab("Total Cannabis Flower (lbs.)") + -->
+<!--     scale_color_brewer(palette = "Set3") -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Basic Models - Forecast -->
+<!-- ```{r} -->
+<!-- aggDemand_tsibble <- reactive({ -->
+<!--   aggDemand_tsibble <- tsibble(aggDemand()) -->
+<!--   if (input$dataGranularity == "Monthly") { -->
+<!--     aggDemand_tsibble$Period <- yearmonth(aggDemand_tsibble$Period)} -->
+<!--   else if (input$dataGranularity == "Weekly") { -->
+<!--     aggDemand_tsibble$Period <- yearweek(aggDemand_tsibble$Period)} -->
+<!--   else if (input$dataGranularity == "Quarterly") { -->
+<!--     aggDemand_tsibble$Period <- yearquarter(aggDemand_tsibble$Period) -->
+<!--   } -->
+<!--   tsibble(aggDemand_tsibble) -->
+<!--   }) -->
+
+<!-- fit<- reactive({ -->
+<!--   aggDemand_tsibble() %>%  -->
+<!--     model( -->
+<!--       holt_add = ETS(tot_flower_demand ~ trend("A") + season("A") + error("A")), -->
+<!--       holt_damp = ETS(tot_flower_demand ~ trend("A", phi = 0.5) + season("A") + error("A")), -->
+<!--       holt_mult = ETS(tot_flower_demand ~ trend("A") + season("M") + error("A")), -->
+<!--       arima = ARIMA(tot_flower_demand ~ 0+ pdq(0, 1, 1) + PDQ(0,1,1), -->
+<!--                     stepwise=FALSE), -->
+<!--       snaive = SNAIVE(tot_flower_demand ~ lag("year")), -->
+<!--     lm2 = TSLM(tot_flower_demand ~ trend(knots = yearmonth("2020 Apr")) + season())) %>% -->
+<!--     mutate(combination = (holt_add + arima + lm2)/3) -->
+<!-- }) -->
+
+<!--  fc <- reactive({ -->
+<!--    fit() %>% fabletools::forecast(h=paste(as.numeric(input$forecastPeriods)/12, " years")) -->
+<!--  }) -->
+
+<!-- renderPlot({ -->
+<!--   fc() %>%  -->
+<!--  fabletools::autoplot(aggDemand_tsibble(),  -->
+<!--           level=if(input$showConfInt2 == "None") {NULL} -->
+<!--                 else {as.numeric(input$showConfInt2)}, -->
+<!--           size=2) + -->
+<!--     xlab("") + -->
+<!--     ylab("Total Cannabis Flower (lbs.)") + -->
+<!--     scale_color_brewer(palette = "Set3") -->
+
+<!--   }) -->
+
+<!-- ``` -->
+
+<!-- ### Model Accuracy - Comparison -->
+<!-- ```{r} -->
+<!-- renderDataTable ({ -->
+<!--   fit() %>%  -->
+<!--     fabletools::accuracy() %>% -->
+<!--     datatable() -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Forecast -->
+<!-- ```{r} -->
+<!-- renderDataTable ({ -->
+<!--   datatable(fc()) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- Supply Forecasting {data-navmenu="Futurecasting"} -->
+<!-- ===================================================================== -->
+<!-- Inputs {.sidebar}  -->
+<!-- ----------------------------------------------------------------------- -->
+<!-- ``` {r} -->
+<!-- h4("Supply Forecasting Controls") -->
+<!-- hr() -->
+<!-- checkboxGroupButtons("includeLicenseTypes",  -->
+<!--              label = "License Types to Include:", -->
+<!--              choices = c("Marijuana Cultivator", "Craft Marijuana Cooperative"), -->
+<!--              selected = c("Marijuana Cultivator"), -->
+<!--              direction = 'vertical') -->
+<!-- hr() -->
+<!-- sliderInput("forecastPeriodsSupply",  -->
+<!--             label = h6("Number of Periods to forecast (months): "), -->
+<!--             min = 0, max = 120, value = 24) -->
+<!-- hr() -->
+
+<!-- materialSwitch("switchExcludeExpired", -->
+<!--                label = "Exclude expired licenses?", -->
+<!--                value = TRUE, -->
+<!--                status = 'primary') -->
+<!-- conditionalPanel( -->
+<!--   condition = "input.switchExcludeExpired", -->
+<!--   sliderInput("expiredMonths", -->
+<!--               label="Expired more than (months): ", -->
+<!--               min = 0, -->
+<!--               max = 12, -->
+<!--               value = 3) -->
+<!-- ) -->
+<!-- hr() -->
+<!-- h5("Cultivator") -->
+<!-- sliderInput("cultCanopyUtilization", -->
+<!--             label="Canopy Utilization (%) ", -->
+<!--             min=0, -->
+<!--             max=100, -->
+<!--             value=95) -->
+<!-- hr() -->
+
+<!-- conditionalPanel( -->
+<!--   condition ="input.includeLicenseTypes.includes('Craft Marijuana Cooperative')", -->
+
+<!--   h5("Craft Cooperative"), -->
+<!--   numericInput("craftMaxCanopy",  -->
+<!--              label = h6("Maximum canopy allowed (sq.ft.)"),  -->
+<!--              value = 100000), -->
+<!--   sliderInput("craftCanopyUtilization", -->
+<!--             label="Canopy Utilization (%) ", -->
+<!--             min=0, -->
+<!--             max=100, -->
+<!--             value=50), -->
+<!--   hr() -->
+<!-- ) -->
+
+<!-- # checkboxGroupButtons ("checkboxSupplyForecast", -->
+<!-- #                       label = "Forecast approach:", -->
+<!-- #                       choices = c("Birth/Death Model","Other"), -->
+<!-- #                       selected = c("Birth/Death Model")) -->
+
+<!-- hr() -->
+<!-- h5("State Transition Probabilities") -->
+
+<!-- selectInput("selectPrDistApp2Prov",  -->
+<!--             label = h6("Probability Distribution App to Prov Consideration"),  -->
+<!--             choices = list("Normal" = "norm",  -->
+<!--                            "Truncated Normal" = "truncnorm",  -->
+<!--                            "Exponential" = "exp",  -->
+<!--                            "Uniform" = "unif",  -->
+<!--                            "Triangular" = "tri"),  -->
+<!--             selected = "exp") -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistApp2Prov == 'norm'", -->
+<!--   numericInput("A2PMeanNorm", label = "Mean (days)", value = 100), -->
+<!--   numericInput("A2PStDNorm", label = "St. Dev. (days)", value = 200) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistApp2Prov == 'truncnorm'", -->
+<!--     numericInput("A2PMinTNorm", label = h6("Min (days)"), value = 50), -->
+<!--     numericInput("A2PMeanTNorm", label = h6("Mean (days)"), value = 100), -->
+<!--     numericInput("A2PStDTNorm", label = h6("St. Dev. (days)"), value = 200), -->
+<!--     numericInput("A2PMaxTNorm", label = h6("Max (days)"), value = 1500) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistApp2Prov == 'exp'", -->
+<!--   numericInput("A2PMeanExp", label = h6("Rate Parameter (days)"), value = .00267) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistApp2Prov == 'unif'", -->
+<!--   numericInput("A2PUniA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("A2PUniB", label = h6("b (max days)"), value = 150) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistApp2Prov == 'tri'", -->
+<!--   numericInput("A2PTriA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("A2PTriB", label = h6("b (max days)"), value = 150), -->
+<!--   numericInput("A2PTriC", label = h6("c (mode days)"), value = 140) -->
+<!-- ) -->
+
+<!-- hr() -->
+<!-- numericInput("prProv2Final", -->
+<!--              label=h6("Probability Provisional Goes to Final (%)"), -->
+<!--              value=60) -->
+
+<!-- selectInput("selectPrDistProv2Final",  -->
+<!--             label = h6("Disribution of Time from Provisional to Final"),  -->
+<!--             choices = list("Normal" = "norm",  -->
+<!--                            "Truncated Normal" = "truncnorm",  -->
+<!--                            "Exponential" = "exp",  -->
+<!--                            "Uniform" = "unif",  -->
+<!--                            "Triangular" = "tri"), -->
+<!--             selected = "exp") -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistProv2Final == 'norm'", -->
+<!--   numericInput("P2FMeanNorm", label = h6("Mean (days)"), value = 100), -->
+<!--   numericInput("P2FStDNorm", label = h6("St. Dev. (days)"), value = 200) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistProv2Final == 'truncnorm'", -->
+<!--     numericInput("P2FMinTNorm", label = h6("Min (days)"), value = 50), -->
+<!--     numericInput("P2FMeanTNorm", label = h6("Mean (days)"), value = 100), -->
+<!--     numericInput("P2FStDTNorm", label = h6("St. Dev. (days)"), value = 200), -->
+<!--     numericInput("P2FMaxTNorm", label = h6("Max (days)"), value = 1250) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistProv2Final == 'exp'", -->
+<!--   numericInput("P2FMeanExp", label = h6("Rate Parameter (days)"), value = .0031) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistProv2Final == 'unif'", -->
+<!--   numericInput("P2FUniA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("P2FUniB", label = h6("b (max days)"), value = 150) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistProv2Final == 'tri'", -->
+<!--   numericInput("P2FTriA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("P2FTriB", label = h6("b (max days)"), value = 150), -->
+<!--   numericInput("P2FTriC", label = h6("c (mode days)"), value = 140) -->
+<!-- ) -->
+
+<!-- hr() -->
+
+<!-- selectInput("selectPrDistFinal2Opp",  -->
+<!--             label = h6("Probability Distribution Final to Commence Operations"), -->
+<!--             choices = list("Normal" = "norm",  -->
+<!--                            "Truncated Normal" = "truncnorm",  -->
+<!--                            "Exponential" = "exp",  -->
+<!--                            "Uniform" = "unif",  -->
+<!--                            "Triangular" = "tri"), -->
+<!--             selected = "exp") -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistFinal2Opp == 'norm'", -->
+<!--   numericInput("F2OMeanNorm", label = h6("Mean (days)"), value = 100), -->
+<!--   numericInput("F2OStDNorm", label = h6("St. Dev. (days)"), value = 200) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistFinal2Opp == 'truncnorm'", -->
+<!--     numericInput("F2OMinTNorm", label = h6("Min (days)"), value = 50), -->
+<!--     numericInput("F2OMaxTNorm", label = h6("Max (days)"), value = 750), -->
+<!--     numericInput("F2OMeanTNorm", label = h6("Mean (days)"), value = 100), -->
+<!--     numericInput("F2OStDTNorm", label = h6("St. Dev. (days)"), value = 200) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistFinal2Opp == 'exp'", -->
+<!--   numericInput("F2OMeanExp", label = h6("Rate Parameter (days)"), value = .01248) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistFinal2Opp == 'unif'", -->
+<!--   numericInput("F2OUniA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("F2OUniB", label = h6("b (max days)"), value = 150) -->
+<!-- ) -->
+
+<!-- conditionalPanel ( -->
+<!--   condition = "input.selectPrDistFinal2Opp == 'tri'", -->
+<!--   numericInput("F2OTriA", label = h6("a (min days)"), value = 75), -->
+<!--   numericInput("F2OTriB", label = h6("b (max days)"), value = 150), -->
+<!--   numericInput("F2OTriC", label = h6("c (mode days)"), value = 140) -->
+<!-- ) -->
+
+<!-- actionButton("reset_inputSupply", "Reset inputs") -->
+
+<!-- # observeEvent(input$reset_inputSupply, { -->
+<!-- #    -->
+<!-- #   updateCheckBox -->
+<!-- #  -->
+<!-- # } -->
+<!-- ``` -->
+
+
+<!-- Row {data-height=125} -->
+<!-- ---------------------------------- -->
+<!-- ### Cultivator - Final Commenced Operations -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & commence_ind == TRUE) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cultivator Final - Commenced Operations', -->
+<!--   color = 'blue' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ### Cultivator - Final but not Commenced Operations -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cultivator Final - Not Commenced Operations', -->
+<!--   color = 'lightblue' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- ### Cultivator - Provisional  -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL LICENSE") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cultivator Provisional', -->
+<!--   color = 'darkgreen' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ### Cultivator - Provisional Consideration -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cultivator Provisional Consideration', -->
+<!--   color = 'orange' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- ### Cultivator - In-Process -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "IN PROCESS") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cultivator - Applications In Process', -->
+<!--   color = 'lightgrey' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- Row {data-height= 100} -->
+<!-- ---------------------------------- -->
+<!-- ### Active -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & commence_ind == TRUE) %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Active (unexpired)', -->
+<!--   color = 'blue' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Inactive -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & commence_ind == TRUE) %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cult Commenced Ops - Expired', -->
+<!--   color = 'blue' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Active Final Not Operating -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE)  %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Active (unexpired)', -->
+<!--   color = 'lightblue' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Inactive Final Not Operating -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cult Final Not Operating - Expired', -->
+<!--   color = 'lightblue' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Active Provisional -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL LICENSE") %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Active (unexpired)', -->
+<!--   color = 'darkgreen' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Inactive Provisional -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL LICENSE") %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")>lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cult Provisional - Inactive', -->
+<!--   color = 'darkgreen' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ###  -->
+
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     mutate(daysSinceApproved = as.numeric(Sys.Date() - application_approved_date)) %>% -->
+<!--     summarize(n=mean(daysSinceApproved)) -->
+
+<!--   valueBox (round(num, 0), -->
+<!--   caption = 'Average Number of Days Since Approved', -->
+<!--   color = 'orange' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Inactive Provisional Consideration -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")>lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cult Prov Cons - Inactive', -->
+<!--   color = 'orange' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Active Provisional Consideration -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")<= lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Active', -->
+<!--   color = 'lightgrey' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Inactive Provisional Consideration -->
+<!-- ```{r} -->
+<!-- renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")>lic_expiration_date) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Cult Prov Cons - Inactive', -->
+<!--   color = 'lightgrey' -->
+<!--   ) -->
+<!-- }) -->
+<!-- ``` -->
+<!-- Row {data-height=125} -->
+<!-- ---------------------------------- -->
+<!-- ### Craft Cooperative - Commenced Operations -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Craft Marijuana Cooperative" & commence_ind == TRUE) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Craft Coop Commenced Operations', -->
+<!--   color = 'tan' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ### Craft Coop - Final but not Commenced Operations -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Craft Marijuana Cooperative" & approved_license_type == "FINAL LICENSE" & commence_ind == FALSE) %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Craft Coop Final - Not Commenced Operations', -->
+<!--   color = 'tan' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- ### Craft Coop - Provisional  -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Craft Marijuana Cooperative" & approved_license_type == "PROVISIONAL LICENSE") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Craft Coop Provisional', -->
+<!--   color = 'tan' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ### Craft Coop - Provisional Consideration -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Craft Marijuana Cooperative" & approved_license_type == "PROVISIONAL CONSIDERATION") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Craft Coop Provisional Consideration', -->
+<!--   color = 'tan' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- ### Craft Coop - In-Process -->
+
+<!-- ``` {r} -->
+<!--   renderValueBox({ -->
+<!--   num <- MELA_df %>%  -->
+<!--     filter(license_type == "Craft Marijuana Cooperative" & approved_license_type == "IN PROCESS") %>% -->
+<!--     summarize(n=n()) -->
+
+<!--   valueBox (num, -->
+<!--   caption = 'Craft Coop - Applications In Process', -->
+<!--   color = 'tan' -->
+<!--   ) -->
+<!-- }) -->
+
+<!-- ``` -->
+<!-- Row {.tabset .tabset-fade} -->
+<!-- ---------------------------------- -->
+
+<!-- ### Forecasted Monthly Cannabis Supply -->
+
+<!-- ```{r} -->
+<!-- renderPlotly({ -->
+<!--     ggplot(data=Capacity_df2(), aes(x=Period, y=total_capacity))+ -->
+<!--     geom_bar(stat='identity', fill='blue', position='stack') + -->
+<!--     ylab("Effective Monthly Flower Yield Capacity (lbs)")+ -->
+<!--     xlab("")+ -->
+<!--     geom_bar(data=capacityForecast_df(), aes(y=cumYield, fill=approved_license_type), stat='identity', position='stack')+ -->
+<!--     scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+ -->
+<!--     theme(axis.text.x=element_text(angle=60, hjust=1))+ -->
+<!--     theme(legend.position="none") -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Maximum Available Canopy (sq. ft.) - Final Licenses (Operating) -->
+<!-- ``` {r} -->
+<!-- MCFinalOperating2 <- reactive ({ -->
+<!--   df <- MELA_df %>% -->
+<!--   filter(license_type == "Marijuana Cultivator" & commence_ind) -->
+
+<!--   if (input$switchExcludeExpired){ -->
+<!--     df <- df %>% -->
+<!--       filter(as.Date(ccc_ThisPeriod, format="%Y%m%d") <= (lic_expiration_date %m+% months(as.numeric(input$expiredMonths)))) -->
+<!--   } -->
+
+<!--   df %>% -->
+<!--     left_join(tiers, by='tier', keep=FALSE) %>% -->
+<!--    mutate(Canopy_Available =  Maximum_Canopy)  %>% -->
+<!--   left_join(yields, by=c("cultivation_environment" = 'Cultivation_Environment')) %>% -->
+<!--   mutate(Estimated_Yield = (Canopy_Available/10000 * Yield_per_10000sqft * as.numeric(input$cultCanopyUtilization)/100)/12 )%>% -->
+<!--     ungroup() -->
+<!-- }) -->
+
+
+<!-- CCFinalOperating2 <- reactive ({ -->
+<!--   MELA_df %>%  -->
+<!--   filter(license_type == "Craft Marijuana Cooperative" & commence_ind)  -->
+<!-- }) -->
+
+
+<!-- Capacity_df2 <- reactive ({ -->
+<!--   df <- MCFinalOperating2() %>%  -->
+<!--   group_by(Period = lubridate::floor_date(commence_operations_date, "month")) %>% -->
+<!--     summarize(inc_capacity = sum(Estimated_Yield), inc_canopy = sum(Canopy_Available)) %>%  -->
+<!--     ungroup() %>% -->
+<!--     complete(Period = seq.Date(min(Period), as.Date(ccc_ThisPeriod, format="%Y%m%d"), by="month")) -->
+<!--   df$inc_capacity[is.na(df$inc_capacity)] <- 0 -->
+<!--   df$inc_canopy[is.na(df$inc_canopy)] <- 0  -->
+
+<!--   df %>%   -->
+<!--     mutate(total_capacity = cumsum(inc_capacity), total_canopy = cumsum(inc_canopy)) -->
+<!-- })  -->
+
+<!-- renderPlotly({ -->
+<!--   outdoorHarvestMonths <- which(v$data[,2]!=0) -->
+
+<!--   df <- Capacity_df() %>% -->
+<!--     mutate(outdoorInd = ((cultivation_environment == "Indoor") * 1)+((cultivation_environment == "Outdoor") * (month(Period) %in% outdoorHarvestMonths))) %>% -->
+<!--     mutate(totEffectiveCanopy = total_canopy * outdoorInd)%>% -->
+<!--     group_by(Period) %>% -->
+<!--     summarize(n = sum(totEffectiveCanopy)) -->
+
+<!--   df %>% ggplot(aes(x=Period, y=n))+ -->
+<!--     geom_bar(stat='identity', fill='darkgreen', size=.25) + -->
+<!--   ylab("Total Maximum Canopy (sq.ft.)")+ -->
+<!--   xlab("") + -->
+<!--   scale_x_date(date_labels="%b-%Y",date_breaks  ="3 month")+ -->
+<!--      theme(axis.text.x=element_text(angle=60, hjust=1), legend.position='none') -->
+<!-- })  -->
+
+
+<!-- ``` -->
+
+<!-- Row {.tabset .tabset-fade} -->
+<!-- ---------------------------------- -->
+
+<!-- ### Expired Cultivator Licenses -->
+<!-- ```{r} -->
+<!-- renderDataTable ({ -->
+<!--   MELA_Approved_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator") %>% -->
+<!--     filter(!is.na(lic_expiration_date)) %>% -->
+<!--     filter(as.Date(ccc_ThisPeriod, format="%Y%m%d")> lic_expiration_date)  -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Expected Commence Operations Dates and Yields  -->
+
+<!-- ```{r} -->
+<!-- expectedCommenceOperations_df <- reactive ({ -->
+<!--   df <- MELA_Approved_df %>%  -->
+<!--     filter(license_type == "Marijuana Cultivator" & !commence_ind) -->
+
+<!--   if (input$switchExcludeExpired){ -->
+<!--     df <- df %>% -->
+<!--       filter(as.Date(ccc_ThisPeriod, format="%Y%m%d") <= (lic_expiration_date %m+% months(as.numeric(input$expiredMonths)))) -->
+<!--   } -->
+<!--   df %>% -->
+<!--     mutate(F2O = case_when (  -->
+<!--       input$selectPrDistFinal2Opp == 'norm' ~ round(rnorm(nrow(.),input$F2OMeanNorm,input$F2OStDNorm)), -->
+<!--       input$selectPrDistFinal2Opp == 'truncnorm' ~ round(rtruncnorm(nrow(.), a=input$F2OMinTNorm,b=input$F2OMaxTNorm,mean=input$F2OMeanTNorm ,sd = input$F2OStDTNorm)), -->
+<!--       input$selectPrDistFinal2Opp == 'exp' ~ round(rexp(nrow(.),input$F2OMeanExp))))%>% -->
+
+<!--   mutate(P2F = case_when (  -->
+<!--       input$selectPrDistProv2Final == 'norm' ~ round(rnorm(nrow(.),input$P2FMeanNorm,input$P2FStDNorm)), -->
+<!--       input$selectPrDistProv2Final == 'truncnorm' ~ round(rtruncnorm(nrow(.), a=input$P2FMinTNorm,b=input$P2FMaxTNorm,mean=input$P2FMeanTNorm ,sd = input$P2FStDTNorm)), -->
+<!--       input$selectPrDistProv2Final == 'exp' ~ round(rexp(nrow(.),input$P2FMeanExp))))%>% -->
+
+<!--   mutate(A2P = case_when (  -->
+<!--       input$selectPrDistApp2Prov == 'norm' ~ round(rnorm(nrow(.),input$A2PMeanNorm,input$A2PStDNorm)), -->
+<!--       input$selectPrDistApp2Prov == 'truncnorm' ~ round(rtruncnorm(nrow(.), a=input$A2PMinTNorm, b=input$A2PMaxTNorm, mean=input$A2PMeanTNorm, sd=input$A2PStDTNorm)), -->
+<!--       input$selectPrDistApp2Prov == 'exp' ~ round(rexp(nrow(.),input$A2PMeanExp))))%>% -->
+
+<!--     mutate (expected_commence_operations_date = case_when ( -->
+<!--       approved_license_type == 'FINAL LICENSE' & !commence_ind ~ final_lic_date + F2O, -->
+<!--       approved_license_type == 'PROVISIONAL LICENSE' | approved_license_type == 'PROVISIONAL CONSIDERATION' ~ final_lic_date + F2O + P2F, -->
+<!--       approved_license_type == 'IN PROCESS' ~ final_lic_date + F2O + P2F + A2P -->
+<!--     )) -->
+<!-- }) -->
+
+<!--  expectedYield_df<- reactive({ -->
+<!--    expectedCommenceOperations_df() %>% -->
+<!--     left_join(tiers ,by='tier', keep=FALSE)  %>% -->
+<!--     mutate(Canopy_Available = Maximum_Canopy)%>% -->
+<!--     left_join(yields, by=c("cultivation_environment" = 'Cultivation_Environment')) %>% -->
+<!--     mutate(Estimated_Yield_Month = ((Canopy_Available/10000)* Yield_per_10000sqft*as.numeric(input$cultCanopyUtilization)/100)/12) -->
+<!-- }) -->
+
+<!-- capacityForecast_df <- reactive({ -->
+<!--   expectedYield_df() %>% -->
+<!--     group_by(approved_license_type, Period = lubridate::floor_date(expected_commence_operations_date, "month")) %>% -->
+<!--   summarize(incYield = sum(Estimated_Yield_Month)) %>% -->
+<!--     complete(Period = seq.Date(from=(tail(Capacity_df2()$Period, 1) %m+% months(1)), length.out=1+input$forecastPeriodsSupply, by='month'))%>% -->
+<!--     mutate (across(incYield, ~replace_na(.x, 0))) %>% -->
+<!--     mutate(cumYield = cumsum(incYield)) %>% -->
+<!--     ungroup()%>%  -->
+<!--     rbind(data.frame(Period = seq(from = (tail(Capacity_df2()$Period, 1) %m+% months(1)), length.out = input$forecastPeriodsSupply, by = 'month'), cumYield = tail(Capacity_df2()$total_capacity,1), approved_license_type = "FINAL LICENSE COMMENCED OPERATIONS", incYield = 0)) %>% -->
+<!--     mutate(approved_license_type = factor(approved_license_type, levels = c("PROVISIONAL CONSIDERATION","PROVISIONAL LICENSE","FINAL LICENSE", "FINAL LICENSE COMMENCED OPERATIONS")))%>% -->
+<!--     filter(Period<= (as.Date(Sys.Date()) %m+% months(input$forecastPeriodsSupply))) -->
+<!-- }) -->
+
+<!-- CF <- reactive ({ -->
+<!--   data.frame(Period = seq(from = tail(Capacity_df2()$Period,1), length.out = input$forecastPeriodsSupply, by = 'month'), cumYield = tail(Capacity_df2()$total_capacity,1), approved_license_type = "FINAL LICENSE COMMENCED OPERATIONS")  -->
+
+<!-- }) -->
+
+<!-- renderDataTable(DT::datatable(expectedYield_df(), -->
+<!--                           colnames = c("License Number" = "license_number", -->
+<!--                                        "Business Name" = "business_name", -->
+<!--                                        "License Status" = "approved_license_type", -->
+<!--                                        "Cultivation Environment" = "cultivation_environment", -->
+<!--                                        "Tier" = "tier", -->
+<!--                                        "Application Date" = "application_date", -->
+<!--                                        "Provisional Cons Date" = "prov_cons_date", -->
+<!--                                        "Provisional Lic Date" = "prov_lic_date", -->
+<!--                                        "Final License Date" = "final_lic_date", -->
+<!--                                        "Expected Commence Operations" = "expected_commence_operations_date", -->
+<!--                                        "Estimated Yield per Month" = "Estimated_Yield_Month"))) -->
+
+<!-- ``` -->
+
+
+<!-- ### Forecasted Capacity by License Type by Month -->
+<!-- ```{r} -->
+<!-- renderDataTable(DT::datatable(capacityForecast_df())) -->
+
+
+<!-- ``` -->
+
+
+<!-- Supply/Demand {data-orientation=columns, data-navmenu="Futurecasting"} -->
+<!-- ====================================================================== -->
+<!-- Inputs {.sidebar}  -->
+<!-- ----------------------------------------------------------------------- -->
+
+<!-- ```{r} -->
+<!-- h4("Supply/Demand Balance") -->
+<!-- hr() -->
+<!-- h6("Demand Forecast Model: ") -->
+<!-- pickerInput( -->
+<!--   "selectDemandForecastModel", -->
+<!--   label = "Which forecast model: ", -->
+<!--   choices = c("arima","lm2","holt_add","holt_mult","holt_damp","snaive","combination"), -->
+<!--   selected = "lm2", -->
+<!--   multiple = FALSE -->
+<!-- ) -->
+
+<!-- hr() -->
+
+<!-- h6("Supply Chain Yield Factors (Increases)") -->
+<!-- sliderInput("sd_cultivator_shrink", -->
+<!--     "Cultivator Waste %", -->
+<!--     min = 0, -->
+<!--     max = 20, -->
+<!--     value = 5) -->
+
+<!-- sliderInput("sd_prod_man_shrink", -->
+<!--     "Product Manufacturing Waste %", -->
+<!--     min = 0, -->
+<!--     max = 20, -->
+<!--     value = 5) -->
+
+<!-- sliderInput("sd_retail_shrink", -->
+<!--     "Retail Shrink %", -->
+<!--      min = 0, -->
+<!--      max = 20, -->
+<!--      value = 2) -->
+<!-- hr() -->
+<!-- h6("Supply Forecast Model: ") -->
+<!-- checkboxGroupInput("supplyLicenseTypes",  -->
+<!--                    label = h6("Include forecasted supply of: "),  -->
+<!--                    choices = list("PROVISIONAL CONSIDERATION", -->
+<!--                                   "PROVISIONAL LICENSE",  -->
+<!--                                   "FINAL LICENSE", -->
+<!--                                   "FINAL LICENSE COMMENCED OPERATIONS"), -->
+<!--                    selected = c("PROVISIONAL CONSIDERATION","PROVISIONAL LICENSE", "FINAL LICENSE", "FINAL LICENSE COMMENCED OPERATIONS")) -->
+
+
+
+
+<!-- ``` -->
+
+<!-- Row {.tabset .tabset-fade} -->
+<!-- ----------------------------------------- -->
+<!-- ### Supply/Demand Balance -->
+<!-- ```{r} -->
+
+<!-- renderPlotly ({ -->
+<!--   fc_selected <- fc() %>% -->
+<!--     filter(.model == input$selectDemandForecastModel) -->
+
+<!--   supply_df <- capacityForecast_df() %>% -->
+<!--                      filter(approved_license_type %in% input$supplyLicenseTypes) -->
+
+<!--   #  fc_s <- fc_selected -->
+<!--   # save(fc_s, file = paste(path_to_output_directory,"/savedDemandForecast.Rdata",sep="")) -->
+<!--   # isolate(C_df <- Capacity_df()) -->
+<!--   # save(C_df, file = paste(path_to_output_directory,"/savedCapacity_df2.Rdata",sep="")) -->
+<!--   # su_df<- supply_df -->
+<!--   # save(su_df, file = paste(path_to_output_directory,"/savedsupply_df.Rdata",sep="")) -->
+<!--   # isolate(fit_df<-fit()) -->
+<!--   # save(fit_df, file = paste(path_to_output_directory,"/savedfit.Rdata",sep="")) -->
+<!--   # isolate(modelName <- input$selectDemandForecastModel) -->
+<!--   # save(modelName, file = paste(path_to_output_directory,"/savedmodelName.Rdata",sep="")) -->
+<!--   # isolate(modelVals <- c(input$sd_cultivator_shrink, input$sd_prod_man_shrink, input$sd_retail_shrink )) -->
+<!--   # save(modelVals, file=paste(path_to_output_directory,"/savedValues.Rdata",sep="")) -->
+
+<!--   augment(fit()) %>% -->
+<!--     filter(.model == input$selectDemandForecastModel) %>% -->
+<!--     ggplot(aes(x=Period)) + -->
+<!--     geom_line(aes(y=tot_flower_demand), color='black', size=1.5) + -->
+<!--     geom_line(data=fc_selected, aes(y=.mean *(1+(as.numeric(input$sd_cultivator_shrink)/100 + as.numeric(input$sd_prod_man_shrink)/100 + as.numeric(input$sd_retail_shrink)/100))), color='green', size=1.5) + -->
+<!--     geom_bar(data=Capacity_df2(),  -->
+<!--              aes(y=total_capacity),  -->
+<!--              stat='identity',  -->
+<!--              fill='blue',  -->
+<!--              alpha=.4,  -->
+<!--              position='stack') + -->
+<!--     geom_bar(data=supply_df,  -->
+<!--              aes(y=cumYield, fill=(approved_license_type)), -->
+<!--              stat='identity',  -->
+<!--              position='stack') + -->
+<!--     xlab("") + -->
+<!--     ylab("Total Cannabis Flower (lbs.)") + -->
+<!--     theme(legend.position="none")+ -->
+<!--     scale_color_brewer(palette = "Set3") -->
+
+
+
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Data capacityForecast -->
+<!-- ```{r} -->
+<!-- renderDataTable ({ -->
+<!--   datatable(capacityForecast_df()) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Data supply_df -->
+<!-- ```{r} -->
+<!-- renderDataTable ({ -->
+<!--   selectedSupply_df<- capacityForecast_df() %>%  -->
+<!--                      filter(approved_license_type %in% input$supplyLicenseTypes) -->
+<!--   datatable(selectedSupply_df) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- Row {.tabset .tabset-fade} -->
+<!-- --------------------------------- -->
+
+<!-- ### Model Summary -->
+<!-- ```{r} -->
+<!-- renderPrint ({ -->
+
+<!--   fit() %>%  -->
+<!--     select(input$selectDemandForecastModel) %>% -->
+<!--     fabletools::report() -->
+<!-- }) -->
+<!-- ``` -->
+<!-- ### Forecast -->
+<!-- ```{r} -->
+<!-- renderTable({ -->
+
+<!--   fc() %>% -->
+<!--     select(input$selectDemandForecastModel) %>% -->
+<!--     fabletools::hilo(level = c(80,85,90,95))  -->
+
+
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ### Fitted Values -->
+<!-- ```{r} -->
+<!-- renderTable({ -->
+
+<!--  fit() %>% -->
+<!--     select(input$selectDemandForecastModel) %>% -->
+<!--     fabletools::augment()  -->
+
+
+
+<!-- }) -->
+<!-- ``` -->
+
+Estimating Factors {data-orientation=rows}
+==================================
+
+Row {.tabset .tabset-fade}
+-----------------------------------------
+
+### Conversion Factors
+
+```{r}
+DT::renderDataTable(Conversion_Factors)
+```
+
+### Recipes
+
+```{r}
+DT::renderDataTable(Recipes)
+```
+
+### Yields
+
+```{r}
+DT::renderDataTable(yields)
+```
+FAQs {data-orientation=rows, data-navmenu="Other Information"}
+==================================
+<h4>Frequently Asked Questions</h4>
+<p>Here you will find answers to many frequently asked questions about periSCOPE™.</p>
+<ol><li><i>Where does the data come from that you use in periSCOPE™?</i><br>Much of the data used in periSCOPE™ is derived from the Cannabis Control Commission's Open Data platform. We do our best to scrub the CCC data to remove anomalies, fill in gaps, and account for other irregularities in the files.  However, the CCC does not warrant the accuracy and completeness of its data, nor do we.</li><br>
+<li><i>What is the technical environment for periSCOPE™?</i><br> periSCOOPE™ is constructed in R.  We use Shiny and Flexdashboard for user interface design. The application is hosted on Shinyapps.io.</li><br>
+<li><i>If I have an interest in custom analytics, is that something you can accomodate?</i><br> We would be pleased to discuss completing customized analytics for an appropriate fee.  Please contact <a href="mailto:chris.olaughlin@operationsarchitects.com">Chris O'Laughlin</a>.</li><br>
+<li><i>How frequently do you update the analysis on periSCOPE™?</i><br> We update data files and all of our analysis whenever the CCC releases new data on its open data platform.  Generally, periSCOPE™ is updated within 48 hours of the drop of new files on the open data platform.</li><br>
+<li><i>What machine learning algorithms do you use in creating forecasts on periSCOPE™?</i><br> We use a combination of various regression models (e.g.: linear, polynomial, autoregression, etc.), as well as neural network and other artifical intellgience algorithms.  Our forecasting models are continuously reviewed, revised, and updated so as to provide the very best forecasting insights. </li>
+</ol>
+
+
+Notes {data-orientation=rows, data-navmenu="Other Information"}
+==================================
+<h4>Release Notes</h4>
+<p>We release updates to periSCOPE™ monthly, which include updates to historical data (timed with the release of new files on the Cannabis Control Commission's Open Data platform), updated forecasts, new functionality, and improvements to visualizations and other design elements.  The key changes in each release are documented here.</p>
+<table>
+  <tr>
+    <th><u>Date</u></th>
+    <th><u>Notes</u></th>
+    <th><u>Comments</u></th>
+  </tr>
+  <tr>
+    <td>February 27, 2023</td>
+    <td><ul>
+    <li>periSCOPE™ officially launches on operationsarchitects.com.</li></ul></td>
+    <td><ul>
+    <li>Forecasting models and controls will be available in a future release.</li></ul></td>
+    <td><ul>
+  </tr>
+ 
+</table>
+
+Disclaimer {data-orientation=rows, data-navmenu="Other Information"}
+==================================
+<h4>Disclaimer</h4>
+
+<p>We do our best to ensure that the data we release is  complete, accurate and useful. However, because we do not create the data, and because the processing required to make the data useful is complex, we cannot be liable for omissions or inaccuracies. Therefore, we release all of our data with the following Disclaimer of Warranty and  Limitation of Liability.
+
+<h5>Disclaimer of Warranty:</h5>
+<p>operations|architects,and its owners, employees, contractors and partners  make no representation or warranty, express or implied, including without limitation any warranties of merchantability or fitness for a particular purpose or warranties as to the identity or ownership of data or information, the quality, accuracy or completeness of data or information, or that the use of such data or information will not infringe any patent, intellectual property or proprietary rights of any party.  The user expressly acknowledges that the Data may contain some nonconformities, defects, or errors. operations|architects does not warrant that the Data will meet the user’s needs or expectations, that the use of the Data will be uninterrupted, or that all nonconformities, defects, or errors can or will be corrected. </p>
+
+<p>THE DATA AND ANY RELATED MATERIALS CONTAINED THEREIN ARE PROVIDED “AS IS,” WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NONINTERFERENCE, SYSTEM INTEGRATION, OR NONINFRINGEMENT. THE ENTIRE RISK OF USE OF THE DATA SHALL BE WITH THE USER.</p>
+
+<h5>Limitation of Liability:</h5>
+<p>operations|architects shall not be liable for any claim for any loss, harm, illness or other damage or injury arising from access to or use of data or information, including without limitation any direct, indirect, incidental, exemplary, special or consequential damages, even if advised of the possibility of such damages.</p>
+
+<p>IN NO EVENT SHALL OPERATIONS|ARCHITECTS BE LIABLE FOR COSTS OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES, LOST PROFITS, LOST SALES OR BUSINESS EXPENDITURES, INVESTMENTS, OR COMMITMENTS IN CONNECTION WITH ANY BUSINESS, LOSS OF ANY GOODWILL, OR FOR ANY DIRECT, INDIRECT, SPECIAL, INCIDENTAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING OUT OF USE OF THE DATA AND ANY RELATED MATERIALS in PERISCOPE, HOWEVER CAUSED, ON ANY THEORY OF LIABILITY, AND WHETHER OR NOT OPERATIONS|ARCHITECTS HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. THESE LIMITATIONS SHALL APPLY NOTWITHSTANDING ANY FAILURE OF ESSENTIAL PURPOSE OF ANY EXCLUSIVE REMEDY.</p>
